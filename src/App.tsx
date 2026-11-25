@@ -1,0 +1,96 @@
+import React from 'react';
+import { AppProvider, useApp } from './context/AppContext';
+import { Sidebar } from './components/layout/Sidebar';
+import { Header } from './components/layout/Header';
+import { ToastContainer } from './components/layout/Toast';
+
+// Views
+import { DashboardView } from './components/views/DashboardView';
+import { AgreementsView } from './components/views/AgreementsView';
+import { AgreementDetailView } from './components/views/AgreementDetailView';
+import { TemplateBuilderView } from './components/views/TemplateBuilderView';
+import { DocumentsReceiptsView } from './components/views/DocumentsReceiptsView';
+import { ReportsAnalyticsView } from './components/views/ReportsAnalyticsView';
+import { TeamRolesView } from './components/views/TeamRolesView';
+import { BrandingDomainView } from './components/views/BrandingDomainView';
+import { SubscriptionView } from './components/views/SubscriptionView';
+import { SuperAdminTenantsView } from './components/views/SuperAdminTenantsView';
+import { SuperAdminPricingView } from './components/views/SuperAdminPricingView';
+import { SignInView } from './components/views/SignInView';
+
+// Modals
+import { RecipientPortalModal } from './components/modals/RecipientPortalModal';
+import { NewAgreementModal } from './components/modals/NewAgreementModal';
+
+const AppContent: React.FC = () => {
+  const { activeView } = useApp();
+
+  const renderActiveView = () => {
+    switch (activeView) {
+      case 'dashboard':
+        return <DashboardView />;
+      case 'agreements':
+        return <AgreementsView />;
+      case 'agreement_detail':
+        return <AgreementDetailView />;
+      case 'templates':
+        return <TemplateBuilderView />;
+      case 'documents_receipts':
+        return <DocumentsReceiptsView />;
+      case 'reports':
+      case 'superadmin_analytics':
+        return <ReportsAnalyticsView />;
+      case 'team_roles':
+        return <TeamRolesView />;
+      case 'branding_domain':
+        return <BrandingDomainView />;
+      case 'subscription':
+        return <SubscriptionView />;
+      case 'superadmin_tenants':
+        return <SuperAdminTenantsView />;
+      case 'superadmin_pricing':
+        return <SuperAdminPricingView />;
+      case 'signin':
+        return <SignInView />;
+      default:
+        return <DashboardView />;
+    }
+  };
+
+  if (activeView === 'signin') {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200">
+        <SignInView />
+        <ToastContainer />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased selection:bg-brand-600 selection:text-white transition-colors duration-200">
+      {/* Sidebar */}
+      <Sidebar />
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0 bg-slate-50 dark:bg-slate-950 transition-colors duration-200">
+        <Header />
+        <main className="flex-1 p-6 sm:p-8 max-w-7xl w-full mx-auto">
+          {renderActiveView()}
+        </main>
+      </div>
+
+      {/* Modals & Overlays */}
+      <RecipientPortalModal />
+      <NewAgreementModal />
+      <ToastContainer />
+    </div>
+  );
+};
+
+export default function App() {
+  return (
+    <AppProvider>
+      <AppContent />
+    </AppProvider>
+  );
+}
