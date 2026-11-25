@@ -6,8 +6,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
-async function bootstrap() {
-  const logger = new Logger('Bootstrap');
+export async function createNestApp() {
   const app = await NestFactory.create(AppModule);
 
   // 1. Security Headers with Helmet
@@ -96,6 +95,13 @@ async function bootstrap() {
     },
   });
 
+  return { app, apiPrefix };
+}
+
+async function bootstrap() {
+  const logger = new Logger('Bootstrap');
+  const { app, apiPrefix } = await createNestApp();
+
   // 8. Start Listening
   const port = Number(process.env.PORT) || 3001;
   await app.listen(port, '0.0.0.0');
@@ -107,7 +113,9 @@ async function bootstrap() {
   logger.log(`=======================================================`);
 }
 
-bootstrap().catch(err => {
-  console.error('Fatal error during application bootstrap:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  bootstrap().catch(err => {
+    console.error('Fatal error during application bootstrap:', err);
+    process.exit(1);
+  });
+}

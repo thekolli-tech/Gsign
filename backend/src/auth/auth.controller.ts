@@ -24,7 +24,7 @@ import { InviteMemberDto } from './dto/invite-member.dto';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { Public, CurrentUser, CurrentSession } from '../common/decorators/auth.decorators';
 import { AuthGuard } from '../common/guards/auth.guard';
-import { ActiveSession } from './session.service';
+import type { ActiveSession } from './session.service';
 
 @ApiTags('Authentication')
 @Controller('auth')
