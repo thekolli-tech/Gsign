@@ -298,7 +298,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return 'light';
   });
 
-  const [activeView, setActiveView] = useState<ActiveView>('dashboard');
+  const [activeView, setActiveView] = useState<ActiveView>('signin');
   const [currentRole, setCurrentRole] = useState<UserRole>('company_admin');
   const [selectedAgreementId, setSelectedAgreementId] = useState<string>('AGR-2026-0412');
   const [agreements, setAgreements] = useState<Agreement[]>(initialAgreements);

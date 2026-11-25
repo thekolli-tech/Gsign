@@ -6,8 +6,8 @@ import gsignLogo from '../../assets/gsign_logo.png';
 export const SignInView: React.FC = () => {
   const { branding, setActiveView, setCurrentRole, addToast } = useApp();
 
-  const [email, setEmail] = useState('genemaxitsolution@gmail.com');
-  const [password, setPassword] = useState('gsign#2k26');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [mfaStep, setMfaStep] = useState(false);
   const [mfaToken, setMfaToken] = useState('');
   const [mfaCode, setMfaCode] = useState('');
