@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { authenticator } from 'otplib';
-import * as QRCode from 'qrcode';
+import QRCode from 'qrcode';
 import { RedisService } from '../redis/redis.service';
 
 @Injectable()
