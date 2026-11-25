@@ -71,11 +71,11 @@ export const Header: React.FC = () => {
       case 'subscription':
         return { main: 'Subscription', sub: 'Business plan · renews 24 Dec 2026' };
       case 'superadmin_tenants':
-        return { main: 'Tenants', sub: 'All customer companies' };
+        return { main: 'Tenants', sub: 'Genemax IT Solution · All customer companies' };
       case 'superadmin_pricing':
-        return { main: 'Plans & Pricing', sub: 'Change prices, limits and add-ons without code' };
+        return { main: 'Plans & Pricing', sub: 'Genemax IT Solution · Change prices, limits and add-ons without code' };
       case 'superadmin_analytics':
-        return { main: 'Usage Analytics', sub: 'Global document throughput & signature volumes' };
+        return { main: 'Usage Analytics', sub: 'Genemax IT Solution · Global document throughput & signature volumes' };
       default:
         return { main: 'GSIGN Hub', sub: branding.logoText };
     }

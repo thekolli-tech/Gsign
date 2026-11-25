@@ -185,37 +185,6 @@ export const SignInView: React.FC = () => {
             </button>
           </form>
 
-          {/* Quick presets for testing convenience */}
-          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
-            <div className="text-[10px] text-slate-400 uppercase tracking-wider text-center font-semibold">
-              Quick Test Credentials
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setEmail('genemaxitsolution@gmail.com');
-                  setPassword('gsign#2k26');
-                }}
-                className="py-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-[10px] font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 text-center truncate"
-                title="Platform Owner (Genemax)"
-              >
-                Platform Owner
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEmail('priya@gsign.in');
-                  setPassword('Password123!');
-                }}
-                className="py-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-[10px] font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 text-center truncate"
-                title="Company Admin (GSIGN)"
-              >
-                Company Admin
-              </button>
-            </div>
-          </div>
-
           {/* Bottom link to Register Company */}
           <div className="text-center pt-2 border-t border-slate-100 dark:border-slate-800">
             <p className="text-xs text-slate-600 dark:text-slate-400">

@@ -5,6 +5,18 @@
 
 const API_BASE = '/api/v1';
 
+async function parseJsonSafe(res: Response): Promise<any> {
+  const text = await res.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: `Server returned non-JSON response (HTTP ${res.status})` };
+  }
+}
+
 export interface LoginResponse {
   mfa_required: boolean;
   mfa_token?: string;
@@ -33,7 +45,7 @@ export const api = {
       body: JSON.stringify({ email, password }),
     });
 
-    const data = await res.json();
+    const data = await parseJsonSafe(res);
     if (!res.ok) {
       throw new Error(data.message || 'Login failed. Please check your credentials.');
     }
@@ -48,7 +60,7 @@ export const api = {
       body: JSON.stringify({ mfa_token, code }),
     });
 
-    const data = await res.json();
+    const data = await parseJsonSafe(res);
     if (!res.ok) {
       throw new Error(data.message || 'MFA verification failed. Please try again.');
     }
@@ -94,7 +106,7 @@ export const api = {
       body: JSON.stringify(payload),
     });
 
-    const data = await res.json();
+    const data = await parseJsonSafe(res);
     if (!res.ok) {
       throw new Error(data.message || 'Company registration failed. Please review your details.');
     }
@@ -103,7 +115,7 @@ export const api = {
 
   async verifyEmail(token: string) {
     const res = await fetch(`${API_BASE}/auth/verify-email?token=${encodeURIComponent(token)}`);
-    const data = await res.json();
+    const data = await parseJsonSafe(res);
     if (!res.ok) {
       throw new Error(data.message || 'Email verification failed.');
     }
@@ -121,7 +133,7 @@ export const api = {
       body: JSON.stringify(payload),
     });
 
-    const data = await res.json();
+    const data = await parseJsonSafe(res);
     if (!res.ok) {
       throw new Error(data.message || 'Company setup failed.');
     }
@@ -149,7 +161,7 @@ export const api = {
       body: JSON.stringify(payload),
     });
 
-    const data = await res.json();
+    const data = await parseJsonSafe(res);
     if (!res.ok) {
       throw new Error(data.message || 'Payment simulation failed.');
     }
