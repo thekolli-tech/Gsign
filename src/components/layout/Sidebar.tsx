@@ -16,9 +16,11 @@ import {
   ToggleLeft,
   ShieldCheck,
   ChevronRight,
-  ExternalLink
+  ExternalLink,
+  LogOut
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { api } from '../../services/api';
 import gsignLogo from '../../assets/gsign_logo.png';
 
 export const Sidebar: React.FC = () => {
@@ -199,6 +201,20 @@ export const Sidebar: React.FC = () => {
           </div>
           <ShieldCheck size={14} className="text-emerald-500 dark:text-emerald-400 flex-shrink-0" />
         </div>
+
+        <button
+          type="button"
+          onClick={async () => {
+            await api.logout().catch(() => {});
+            setCurrentRole('company_admin');
+            setActiveView('signin');
+            addToast('Signed Out', 'Your session has been ended.', 'info');
+          }}
+          className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 dark:hover:bg-rose-950/40 dark:hover:text-rose-400 dark:hover:border-rose-900/60 transition-colors cursor-pointer"
+        >
+          <LogOut size={13} />
+          <span>Sign out</span>
+        </button>
 
         {/* Powered By Genemax Sign */}
         {!branding.hidePoweredBy && (

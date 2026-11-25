@@ -5,9 +5,11 @@ import {
   Moon, 
   Plus, 
   Command,
-  FileCheck2
+  FileCheck2,
+  LogOut
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { api } from '../../services/api';
 
 export const Header: React.FC = () => {
   const { 
@@ -18,7 +20,9 @@ export const Header: React.FC = () => {
     branding,
     agreements,
     setSelectedAgreementId,
-    setActiveView
+    setActiveView,
+    setCurrentRole,
+    addToast
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -189,6 +193,23 @@ export const Header: React.FC = () => {
         >
           <Plus size={15} strokeWidth={2} />
           <span>+ New agreement</span>
+        </button>
+
+        {/* Sign Out Button */}
+        <button
+          type="button"
+          onClick={async () => {
+            await api.logout().catch(() => {});
+            setCurrentRole('company_admin');
+            setActiveView('signin');
+            addToast('Signed Out', 'Your session has been ended.', 'info');
+          }}
+          title="Sign out"
+          aria-label="Sign out"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/40 dark:hover:text-rose-400 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+        >
+          <LogOut size={14} />
+          <span className="hidden sm:inline">Sign out</span>
         </button>
       </div>
     </header>
