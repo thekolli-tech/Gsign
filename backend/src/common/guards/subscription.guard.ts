@@ -52,14 +52,16 @@ export class SubscriptionGuard implements CanActivate {
       return true;
     }
 
-    // Query active subscription for this tenant
-    const subRes = await this.db.query(
-      `SELECT ts.id, ts.status, ts.current_period_start, ts.current_period_end, ts.grace_period_end, p.name as plan_name
-       FROM tenant_subscriptions ts
-       JOIN subscription_plans p ON ts.plan_id = p.id
-       WHERE ts.tenant_id = $1`,
-      [tenantId]
-    );
+    // Query active subscription for this tenant within RLS tenant context
+    const subRes = await this.db.executeWithTenantContext(tenantId, async (client) => {
+      return client.query(
+        `SELECT ts.id, ts.status, ts.current_period_start, ts.current_period_end, ts.grace_period_end, p.name as plan_name
+         FROM tenant_subscriptions ts
+         JOIN subscription_plans p ON ts.plan_id = p.id
+         WHERE ts.tenant_id = $1`,
+        [tenantId]
+      );
+    });
 
     if (subRes.rows.length === 0) {
       throw new ForbiddenException(

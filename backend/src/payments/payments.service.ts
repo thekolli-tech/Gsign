@@ -124,13 +124,15 @@ export class PaymentsService {
       return [];
     }
 
-    const res = await this.db.query(
-      `SELECT id, invoice_number, amount, tax_amount, total_amount, status, created_at
-       FROM invoices
-       WHERE tenant_id = $1
-       ORDER BY created_at DESC;`,
-      [tenantId]
-    );
+    const res = await this.db.executeWithTenantContext(tenantId, async (client) => {
+      return client.query(
+        `SELECT id, invoice_number, amount, tax_amount, total_amount, status, created_at
+         FROM invoices
+         WHERE tenant_id = $1
+         ORDER BY created_at DESC;`,
+        [tenantId]
+      );
+    });
 
     return res.rows;
   }

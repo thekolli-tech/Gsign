@@ -457,6 +457,50 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
     });
   });
 
+  it('Regression: Cross-tenant RLS isolation for subscriptions, invoices, and Platform Owner DB session fallback', async () => {
+    const tenants = await db.query(`SELECT id, slug FROM tenants WHERE slug IN ('gsign', 'acme') ORDER BY slug ASC`);
+    expect(tenants.rows.length).toBeGreaterThanOrEqual(2);
+    const acmeTenant = tenants.rows.find(t => t.slug === 'acme');
+    const gsignTenant = tenants.rows.find(t => t.slug === 'gsign');
+    expect(acmeTenant).toBeDefined();
+    expect(gsignTenant).toBeDefined();
+
+    // 1. Tenant-scoped subscription & invoice queries execute inside RLS tenant context
+    const gsignSub = await subscriptionsService.getCurrentSubscription(gsignTenant.id);
+    expect(gsignSub.tenant_id).toBe(gsignTenant.id);
+
+    const acmeInvoices = await paymentsService.getInvoices(acmeTenant.id);
+    expect(Array.isArray(acmeInvoices)).toBe(true);
+    // Ensure no invoice belonging to gsign leaks into acme's query
+    const gsignInvoices = await paymentsService.getInvoices(gsignTenant.id);
+    const gsignIds = new Set(gsignInvoices.map((i: any) => i.id));
+    for (const inv of acmeInvoices) {
+      expect(gsignIds.has(inv.id)).toBe(false);
+    }
+
+    // 2. Platform Owner session survives Redis cache eviction via PostgreSQL RLS fallback
+    const ownerLogin = await authService.login(
+      { email: 'genemaxitsolution@gmail.com', password: 'gsign#2k26' },
+      '127.0.0.1',
+      'Regression-Agent'
+    );
+    expect(ownerLogin.session).toBeDefined();
+    const sid = ownerLogin.session!.sessionId;
+
+    // Evict from Redis to force PostgreSQL RLS fallback in SessionService.getSession
+    await redis.del(`session:${sid}`);
+    const reloadedSession = await sessionService.getSession(sid);
+    expect(reloadedSession).not.toBeNull();
+    expect(reloadedSession!.isPlatformOwner).toBe(true);
+    expect(reloadedSession!.tenantId).toBeNull();
+    expect(reloadedSession!.role).toBe('PLATFORM_OWNER');
+
+    // Revoke session and confirm invalidation
+    await sessionService.revokeSession(sid);
+    const afterRevoke = await sessionService.getSession(sid);
+    expect(afterRevoke).toBeNull();
+  });
+
   afterAll(async () => {
     // Ensure clean teardown of db and redis connections
     await db.onModuleDestroy();

@@ -661,11 +661,13 @@ export class AuthService {
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
 
-    await this.db.query(
-      `INSERT INTO invitations (tenant_id, email, role_id, department, token_hash, expires_at, created_by)
-       VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days', $6);`,
-      [inviter.tenantId, dto.email.trim().toLowerCase(), role.id, dto.department.trim(), tokenHash, inviter.id]
-    );
+    await this.db.executeWithTenantContext(inviter.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO invitations (tenant_id, email, role_id, department, token_hash, expires_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days', $6);`,
+        [inviter.tenantId, dto.email.trim().toLowerCase(), role.id, dto.department.trim(), tokenHash, inviter.id]
+      );
+    });
 
     return {
       success: true,
@@ -680,12 +682,14 @@ export class AuthService {
   async acceptInvite(dto: AcceptInviteDto) {
     const tokenHash = crypto.createHash('sha256').update(dto.token.trim()).digest('hex');
 
-    const inviteRes = await this.db.query(
-      `SELECT id, tenant_id, email, role_id, department, expires_at, accepted_at 
-       FROM invitations 
-       WHERE token_hash = $1`,
-      [tokenHash]
-    );
+    const inviteRes = await this.db.executeAsSuperAdmin(async (client) => {
+      return client.query(
+        `SELECT id, tenant_id, email, role_id, department, expires_at, accepted_at 
+         FROM invitations 
+         WHERE token_hash = $1`,
+        [tokenHash]
+      );
+    });
 
     if (inviteRes.rows.length === 0) {
       throw new BadRequestException('Invalid invitation token.');
@@ -699,11 +703,7 @@ export class AuthService {
       throw new BadRequestException('Invitation has expired. Please contact your company administrator.');
     }
 
-    const client = await this.db.getPool().connect();
-    try {
-      await client.query('BEGIN');
-      await client.query("SET LOCAL app.is_super_admin = 'true';");
-
+    return this.db.executeWithTenantContext(invite.tenant_id, async (client) => {
       // Check if user already exists
       let userId: string;
       const userRes = await client.query('SELECT id FROM users WHERE email = $1', [invite.email]);
@@ -730,18 +730,12 @@ export class AuthService {
 
       // Mark invitation accepted
       await client.query('UPDATE invitations SET accepted_at = NOW() WHERE id = $1', [invite.id]);
-      await client.query('COMMIT');
 
       return {
         success: true,
         message: 'Invitation accepted successfully. You may now sign in to your company workspace.',
       };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   /**
@@ -751,12 +745,14 @@ export class AuthService {
     userId: string,
     isSuperAdmin: boolean
   ): Promise<string | null> {
-    const memberRes = await this.db.query(
-      `SELECT tenant_id FROM tenant_memberships 
-       WHERE user_id = $1 AND status = 'Active' 
-       ORDER BY created_at ASC LIMIT 1`,
-      [userId]
-    );
+    const memberRes = await this.db.executeAsSuperAdmin(async (client) => {
+      return client.query(
+        `SELECT tenant_id FROM tenant_memberships 
+         WHERE user_id = $1 AND status = 'Active' 
+         ORDER BY created_at ASC LIMIT 1`,
+        [userId]
+      );
+    });
 
     if (memberRes.rows.length > 0) {
       return memberRes.rows[0].tenant_id;

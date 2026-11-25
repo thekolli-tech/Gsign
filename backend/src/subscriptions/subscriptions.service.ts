@@ -27,14 +27,16 @@ export class SubscriptionsService {
       throw new BadRequestException('No tenant context provided');
     }
 
-    const res = await this.db.query(
-      `SELECT ts.id, ts.tenant_id, ts.billing_cycle, ts.status, ts.current_period_start, ts.current_period_end, ts.grace_period_end,
-              sp.name as plan_name, sp.slug as plan_slug, sp.max_agreements_per_month, sp.max_users, sp.features
-       FROM tenant_subscriptions ts
-       JOIN subscription_plans sp ON ts.plan_id = sp.id
-       WHERE ts.tenant_id = $1`,
-      [tenantId]
-    );
+    const res = await this.db.executeWithTenantContext(tenantId, async (client) => {
+      return client.query(
+        `SELECT ts.id, ts.tenant_id, ts.billing_cycle, ts.status, ts.current_period_start, ts.current_period_end, ts.grace_period_end,
+                sp.name as plan_name, sp.slug as plan_slug, sp.max_agreements_per_month, sp.max_users, sp.features
+         FROM tenant_subscriptions ts
+         JOIN subscription_plans sp ON ts.plan_id = sp.id
+         WHERE ts.tenant_id = $1`,
+        [tenantId]
+      );
+    });
 
     if (res.rows.length === 0) {
       return {

@@ -2,8 +2,16 @@ import { Client } from 'pg';
 import * as argon2 from 'argon2';
 
 export async function runSeeds(connectionString?: string) {
-  const dbUrl = connectionString || process.env.DATABASE_URL || 'postgres://postgres:gsign_dev_password@127.0.0.1:5432/gsign_db';
-  console.log('Seeding GSIGN database...');
+  const isProduction = process.env.NODE_ENV === 'production';
+  const dbUrl = isProduction
+    ? connectionString || process.env.DATABASE_URL
+    : connectionString || process.env.DATABASE_URL || 'postgres://postgres:gsign_dev_password@127.0.0.1:5432/gsign_db';
+
+  if (!dbUrl) {
+    throw new Error('DATABASE_URL is required when NODE_ENV=production.');
+  }
+
+  console.log(`Seeding GSIGN database (mode: ${isProduction ? 'production' : 'development'})...`);
 
   const client = new Client({ connectionString: dbUrl });
   await client.connect();
@@ -85,25 +93,24 @@ export async function runSeeds(connectionString?: string) {
     }
     console.log(`Seeded ${roles.length} system roles with permissions.`);
 
-    // 3. Seed Global Super Admin
-    const superAdminPasswordHash = await argon2.hash('SuperAdmin@GSign2026!');
-    const superAdminRes = await client.query(
-      `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_active, email_verified_at)
-       VALUES ($1, $2, $3, $4, true, true, NOW())
-       ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_super_admin = true
-       RETURNING id;`,
-      ['superadmin@genemax.in', superAdminPasswordHash, 'Sunil G (Super Admin)', '+91 99000 11223']
-    );
-    const superAdminId = superAdminRes.rows[0].id;
-    console.log('Seeded Super Admin:', 'superadmin@genemax.in', `(${superAdminId})`);
+    // 3. Bootstrap Platform Owner (Genemax IT Solution)
+    const ownerEmail = isProduction
+      ? process.env.GSIGN_OWNER_EMAIL
+      : process.env.GSIGN_OWNER_EMAIL || 'genemaxitsolution@gmail.com';
+    const ownerPassword = isProduction
+      ? process.env.GSIGN_OWNER_INITIAL_PASSWORD
+      : process.env.GSIGN_OWNER_INITIAL_PASSWORD || 'gsign#2k26';
 
-    // 3.1 Bootstrap Platform Owner (Genemax IT Solution)
-    const ownerEmail = process.env.GSIGN_OWNER_EMAIL || 'genemaxitsolution@gmail.com';
-    const ownerPassword = process.env.GSIGN_OWNER_INITIAL_PASSWORD || 'gsign#2k26';
+    if (!ownerEmail) {
+      throw new Error('GSIGN_OWNER_EMAIL is required when NODE_ENV=production.');
+    }
 
     const existingOwner = await client.query('SELECT id, password_hash, must_change_password FROM users WHERE email = $1', [ownerEmail]);
     let ownerId: string;
     if (existingOwner.rows.length === 0) {
+      if (!ownerPassword) {
+        throw new Error('GSIGN_OWNER_INITIAL_PASSWORD is required to bootstrap the initial Platform Owner when NODE_ENV=production.');
+      }
       const ownerPasswordHash = await argon2.hash(ownerPassword);
       const ownerRes = await client.query(
         `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
@@ -112,7 +119,7 @@ export async function runSeeds(connectionString?: string) {
         [ownerEmail, ownerPasswordHash]
       );
       ownerId = ownerRes.rows[0].id;
-      console.log('Bootstrapped Platform Owner (Genemax):', ownerEmail, `(${ownerId})`);
+      console.log('Bootstrapped Platform Owner:', ownerEmail, `(${ownerId})`);
 
       await client.query(
         `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason, metadata)
@@ -126,7 +133,7 @@ export async function runSeeds(connectionString?: string) {
         `UPDATE users SET is_super_admin = true, is_platform_owner = true WHERE id = $1;`,
         [ownerId]
       );
-      console.log('Platform Owner already exists. Preserving password and state for:', ownerEmail);
+      console.log('Platform Owner already exists. Preserving password and security state for:', ownerEmail);
     }
 
     // 3.2 Seed Paid Subscription Plans (NO FREE TRIAL)
@@ -201,89 +208,109 @@ export async function runSeeds(connectionString?: string) {
     }
     console.log('Seeded 3 paid subscription plans (Starter, Growth, Enterprise).');
 
-    // 4. Seed Primary Tenant (GSIGN Pvt Ltd)
-    const tenant1Res = await client.query(
-      `INSERT INTO tenants (name, slug, cin, gstin, contact_email, contact_phone, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'Active')
-       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
-       RETURNING id;`,
-      ['GSIGN Pvt Ltd', 'gsign', 'U72200KA2026PTC099881', '29AABCG1234F1Z5', 'admin@gsign.in', '+91 98765 43210']
-    );
-    const tenant1Id = tenant1Res.rows[0].id;
+    let superAdminId: string | null = null;
+    let tenant1Id: string | null = null;
+    let tenant2Id: string | null = null;
+    let user1Id: string | null = null;
+    let user2Id: string | null = null;
 
-    // 5. Seed Secondary Tenant (Acme Corp for isolation tests)
-    const tenant2Res = await client.query(
-      `INSERT INTO tenants (name, slug, cin, gstin, contact_email, contact_phone, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'Active')
-       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
-       RETURNING id;`,
-      ['Acme Corporation', 'acme', 'U72200MH2026PTC100222', '27AABCA5678G2Z1', 'admin@acme.com', '+91 91234 56789']
-    );
-    const tenant2Id = tenant2Res.rows[0].id;
-    console.log(`Seeded Tenants: [GSIGN: ${tenant1Id}] and [Acme: ${tenant2Id}]`);
+    if (!isProduction) {
+      // 4. Development Only: Seed Global Super Admin
+      const superAdminPasswordHash = await argon2.hash('SuperAdmin@GSign2026!');
+      const superAdminRes = await client.query(
+        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_active, email_verified_at)
+         VALUES ($1, $2, $3, $4, true, true, NOW())
+         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_super_admin = true
+         RETURNING id;`,
+        ['superadmin@genemax.in', superAdminPasswordHash, 'Sunil G (Super Admin)', '+91 99000 11223']
+      );
+      superAdminId = superAdminRes.rows[0].id;
+      console.log('Seeded Dev Super Admin:', 'superadmin@genemax.in', `(${superAdminId})`);
 
-    // 6. Seed Tenant Admin Users
-    const defaultPasswordHash = await argon2.hash('Password123!');
+      // 5. Development Only: Seed Primary & Secondary Demo Tenants
+      const tenant1Res = await client.query(
+        `INSERT INTO tenants (name, slug, cin, gstin, contact_email, contact_phone, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Active')
+         ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+         RETURNING id;`,
+        ['GSIGN Pvt Ltd', 'gsign', 'U72200KA2026PTC099881', '29AABCG1234F1Z5', 'admin@gsign.in', '+91 98765 43210']
+      );
+      tenant1Id = tenant1Res.rows[0].id;
 
-    // Priya N for GSIGN
-    const user1Res = await client.query(
-      `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_active, email_verified_at)
-       VALUES ($1, $2, $3, $4, false, true, NOW())
-       ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
-       RETURNING id;`,
-      ['priya@gsign.in', defaultPasswordHash, 'Priya N (HR Admin)', '+91 98765 44821']
-    );
-    const user1Id = user1Res.rows[0].id;
+      const tenant2Res = await client.query(
+        `INSERT INTO tenants (name, slug, cin, gstin, contact_email, contact_phone, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Active')
+         ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+         RETURNING id;`,
+        ['Acme Corporation', 'acme', 'U72200MH2026PTC100222', '27AABCA5678G2Z1', 'admin@acme.com', '+91 91234 56789']
+      );
+      tenant2Id = tenant2Res.rows[0].id;
+      console.log(`Seeded Dev Tenants: [GSIGN: ${tenant1Id}] and [Acme: ${tenant2Id}]`);
 
-    // John Doe for Acme
-    const user2Res = await client.query(
-      `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_active, email_verified_at)
-       VALUES ($1, $2, $3, $4, false, true, NOW())
-       ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
-       RETURNING id;`,
-      ['john@acme.com', defaultPasswordHash, 'John Doe (Admin)', '+91 91234 00001']
-    );
-    const user2Id = user2Res.rows[0].id;
+      // 6. Development Only: Seed Demo Tenant Admin Users
+      const defaultPasswordHash = await argon2.hash('Password123!');
 
-    // 7. Seed Tenant Memberships (Bypassing RLS during administrative seed)
-    await client.query("SET LOCAL app.is_super_admin = 'true';");
+      const user1Res = await client.query(
+        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_active, email_verified_at)
+         VALUES ($1, $2, $3, $4, false, true, NOW())
+         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
+         RETURNING id;`,
+        ['priya@gsign.in', defaultPasswordHash, 'Priya N (HR Admin)', '+91 98765 44821']
+      );
+      user1Id = user1Res.rows[0].id;
 
-    const companyAdminRoleId = roleMap.get('Company Admin')!;
-    await client.query(
-      `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
-       VALUES ($1, $2, $3, 'HR', 'Active')
-       ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
-      [tenant1Id, user1Id, companyAdminRoleId]
-    );
+      const user2Res = await client.query(
+        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_active, email_verified_at)
+         VALUES ($1, $2, $3, $4, false, true, NOW())
+         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
+         RETURNING id;`,
+        ['john@acme.com', defaultPasswordHash, 'John Doe (Admin)', '+91 91234 00001']
+      );
+      user2Id = user2Res.rows[0].id;
 
-    await client.query(
-      `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
-       VALUES ($1, $2, $3, 'Executive', 'Active')
-       ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
-      [tenant2Id, user2Id, companyAdminRoleId]
-    );
+      // 7. Development Only: Seed Demo Tenant Memberships (Bypassing RLS during administrative seed)
+      await client.query("SET LOCAL app.is_super_admin = 'true';");
 
-    // 8. Seed Tenant Subscriptions (Active for Demo Tenants)
-    const enterprisePlanId = planMap.get('enterprise')!;
-    const growthPlanId = planMap.get('growth')!;
+      const companyAdminRoleId = roleMap.get('Company Admin')!;
+      await client.query(
+        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+         VALUES ($1, $2, $3, 'HR', 'Active')
+         ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
+        [tenant1Id, user1Id, companyAdminRoleId]
+      );
 
-    await client.query(
-      `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
-       VALUES ($1, $2, 'annual', 'ACTIVE', NOW(), NOW() + INTERVAL '1 year')
-       ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
-      [tenant1Id, enterprisePlanId]
-    );
+      await client.query(
+        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+         VALUES ($1, $2, $3, 'Executive', 'Active')
+         ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
+        [tenant2Id, user2Id, companyAdminRoleId]
+      );
 
-    await client.query(
-      `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
-       VALUES ($1, $2, 'monthly', 'ACTIVE', NOW(), NOW() + INTERVAL '1 month')
-       ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
-      [tenant2Id, growthPlanId]
-    );
+      // 8. Development Only: Seed Demo Tenant Subscriptions
+      const enterprisePlanId = planMap.get('enterprise')!;
+      const growthPlanId = planMap.get('growth')!;
+
+      await client.query(
+        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
+         VALUES ($1, $2, 'annual', 'ACTIVE', NOW(), NOW() + INTERVAL '1 year')
+         ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
+        [tenant1Id, enterprisePlanId]
+      );
+
+      await client.query(
+        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
+         VALUES ($1, $2, 'monthly', 'ACTIVE', NOW(), NOW() + INTERVAL '1 month')
+         ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
+        [tenant2Id, growthPlanId]
+      );
+    } else {
+      console.log('Production mode: skipped demo Super Admin, demo tenants, demo users, and demo subscriptions.');
+    }
 
     await client.query('COMMIT');
     console.log('Seeding completed successfully!');
     return {
+      ownerId,
       superAdminId,
       tenant1Id,
       tenant2Id,
@@ -291,8 +318,12 @@ export async function runSeeds(connectionString?: string) {
       user2Id,
     };
   } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Seeding failed:', err);
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // Ignore rollback error if transaction was not started
+    }
+    console.error('Seeding failed:', err instanceof Error ? err.message : 'Unknown error');
     throw err;
   } finally {
     await client.end();
