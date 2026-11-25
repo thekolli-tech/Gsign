@@ -167,4 +167,44 @@ export const api = {
     }
     return data;
   },
+
+  // 4. Forgot Password (Email OTP)
+  async requestPasswordResetOtp(email: string) {
+    const res = await fetch(`${API_BASE}/auth/forgot-password/request-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data.message || 'Failed to send verification OTP.');
+    }
+    return data;
+  },
+
+  async verifyPasswordResetOtp(email: string, otp: string) {
+    const res = await fetch(`${API_BASE}/auth/forgot-password/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, otp }),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data.message || 'Invalid or expired OTP.');
+    }
+    return data;
+  },
+
+  async resetPasswordWithOtp(reset_token: string, new_password: string) {
+    const res = await fetch(`${API_BASE}/auth/forgot-password/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_token, new_password }),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data.message || 'Failed to update password.');
+    }
+    return data;
+  },
 };

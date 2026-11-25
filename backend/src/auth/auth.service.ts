@@ -637,6 +637,169 @@ export class AuthService {
   }
 
   /**
+   * 4.1 Request 6-digit Email OTP for Forgot Password
+   */
+  async requestPasswordResetOtp(emailInput: string) {
+    const email = emailInput.trim().toLowerCase();
+
+    // Check active user by email (or company_registrations admin_user_id)
+    const userRes = await this.db.query(
+      `SELECT u.id, u.email, u.full_name, u.is_active
+       FROM users u
+       WHERE LOWER(u.email) = $1
+       LIMIT 1`,
+      [email]
+    );
+
+    let user = userRes.rows[0];
+    if (!user) {
+      const regRes = await this.db.query(
+        `SELECT u.id, u.email, u.full_name, u.is_active
+         FROM company_registrations cr
+         JOIN users u ON cr.admin_user_id = u.id
+         WHERE LOWER(cr.business_email) = $1 OR LOWER(cr.admin_email) = $1
+         LIMIT 1`,
+        [email]
+      );
+      user = regRes.rows[0];
+    }
+
+    if (user && user.is_active) {
+      const otp = crypto.randomInt(100000, 1000000).toString();
+      const otpHash = crypto.createHash('sha256').update(otp).digest('hex');
+
+      await this.redis.setex(
+        `pwd_reset_otp:${email}`,
+        600,
+        JSON.stringify({ userId: user.id, otpHash, attempts: 0 })
+      );
+
+      // Optional email delivery via Resend API when RESEND_API_KEY is configured
+      const resendKey = process.env.RESEND_API_KEY;
+      const fromEmail = process.env.EMAIL_FROM || 'GSIGN Security <onboarding@resend.dev>';
+      if (resendKey) {
+        try {
+          await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${resendKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              from: fromEmail,
+              to: [user.email],
+              subject: 'GSIGN Password Reset Verification Code',
+              html: `<p>Hello ${user.full_name || 'User'},</p><p>Your GSIGN password reset verification code is:</p><h2 style="letter-spacing:4px;">${otp}</h2><p>This code expires in 10 minutes. If you did not request a password reset, please ignore this email.</p>`,
+            }),
+          });
+        } catch (err: any) {
+          console.warn(`Email dispatch failed for password reset OTP: ${err?.message || 'unknown'}`);
+        }
+      } else {
+        console.log(`Password reset OTP generated for ${email} (configure RESEND_API_KEY for live email delivery).`);
+      }
+
+      if (process.env.NODE_ENV !== 'production') {
+        return {
+          success: true,
+          message: 'A 6-digit verification OTP has been sent to your registered email.',
+          dev_otp_preview: otp,
+        };
+      }
+    }
+
+    return {
+      success: true,
+      message: 'If an active account exists for that email, a 6-digit verification OTP has been sent.',
+    };
+  }
+
+  /**
+   * 4.2 Verify 6-digit Email OTP and issue single-use reset token
+   */
+  async verifyPasswordResetOtp(emailInput: string, otpInput: string) {
+    const email = emailInput.trim().toLowerCase();
+    const otp = otpInput.trim();
+    const redisKey = `pwd_reset_otp:${email}`;
+    const raw = await this.redis.get(redisKey);
+
+    if (!raw) {
+      throw new BadRequestException('OTP expired or not requested. Please request a new code.');
+    }
+
+    const record = JSON.parse(raw) as { userId: string; otpHash: string; attempts: number };
+    if (record.attempts >= 5) {
+      await this.redis.del(redisKey);
+      throw new BadRequestException('Too many invalid OTP attempts. Please request a new code.');
+    }
+
+    const candidateHash = crypto.createHash('sha256').update(otp).digest('hex');
+    const valid =
+      candidateHash.length === record.otpHash.length &&
+      crypto.timingSafeEqual(Buffer.from(candidateHash, 'hex'), Buffer.from(record.otpHash, 'hex'));
+
+    if (!valid) {
+      record.attempts += 1;
+      const ttl = await this.redis.ttl(redisKey);
+      await this.redis.setex(redisKey, ttl > 0 ? ttl : 300, JSON.stringify(record));
+      throw new BadRequestException('Invalid verification OTP. Please check the code and try again.');
+    }
+
+    // Consume OTP and issue single-use reset token (10 min TTL)
+    await this.redis.del(redisKey);
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    await this.redis.setex(`pwd_reset_token:${resetTokenHash}`, 600, record.userId);
+
+    return {
+      verified: true,
+      reset_token: resetToken,
+      message: 'OTP verified. You may now set a new password.',
+    };
+  }
+
+  /**
+   * 4.3 Reset Password using verified single-use reset token
+   */
+  async resetPasswordWithOtp(resetToken: string, newPassword: string) {
+    const tokenHash = crypto.createHash('sha256').update(resetToken.trim()).digest('hex');
+    const tokenKey = `pwd_reset_token:${tokenHash}`;
+    const userId = await this.redis.get(tokenKey);
+
+    if (!userId) {
+      throw new BadRequestException('Password reset session expired or invalid. Please restart the OTP flow.');
+    }
+
+    await this.redis.del(tokenKey);
+    const newHash = await this.crypto.hashPassword(newPassword);
+
+    const updated = await this.db.query(
+      `UPDATE users
+       SET password_hash = $1, must_change_password = false, updated_at = NOW()
+       WHERE id = $2
+       RETURNING email`,
+      [newHash, userId]
+    );
+
+    if (updated.rows.length === 0) {
+      throw new NotFoundException('User account not found.');
+    }
+
+    await this.sessionService.revokeAllUserSessions(userId);
+
+    await this.db.query(
+      `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason)
+       VALUES ($1, $2, 'USER', 'PASSWORD_RESET_OTP', 'USER', $3, 'Password reset completed via verified email OTP');`,
+      [userId, updated.rows[0].email, userId]
+    );
+
+    return {
+      success: true,
+      message: 'Your password has been updated successfully. Please sign in with your new password.',
+    };
+  }
+
+  /**
    * 5. Invite Employee to Company Workspace
    */
   async inviteMember(inviter: any, dto: InviteMemberDto) {

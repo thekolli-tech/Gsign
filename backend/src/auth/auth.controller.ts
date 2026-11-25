@@ -22,6 +22,11 @@ import { CompleteCompanySetupDto } from './dto/complete-company-setup.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
+import {
+  RequestPasswordOtpDto,
+  VerifyPasswordOtpDto,
+  ResetPasswordWithOtpDto,
+} from './dto/forgot-password.dto';
 import { Public, CurrentUser, CurrentSession } from '../common/decorators/auth.decorators';
 import { AuthGuard } from '../common/guards/auth.guard';
 import type { ActiveSession } from './session.service';
@@ -273,5 +278,32 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Invitation accepted and account established' })
   async acceptInvite(@Body() dto: AcceptInviteDto) {
     return this.authService.acceptInvite(dto);
+  }
+
+  @Public()
+  @Post('forgot-password/request-otp')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send a 6-digit password reset OTP to the registered email' })
+  @ApiResponse({ status: 200, description: 'Password reset OTP dispatched if account exists' })
+  async requestPasswordOtp(@Body() dto: RequestPasswordOtpDto) {
+    return this.authService.requestPasswordResetOtp(dto.email);
+  }
+
+  @Public()
+  @Post('forgot-password/verify-otp')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify 6-digit password reset OTP and obtain reset token' })
+  @ApiResponse({ status: 200, description: 'OTP verified successfully' })
+  async verifyPasswordOtp(@Body() dto: VerifyPasswordOtpDto) {
+    return this.authService.verifyPasswordResetOtp(dto.email, dto.otp);
+  }
+
+  @Public()
+  @Post('forgot-password/reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reset password using verified OTP reset token' })
+  @ApiResponse({ status: 200, description: 'Password updated successfully' })
+  async resetPasswordWithOtp(@Body() dto: ResetPasswordWithOtpDto) {
+    return this.authService.resetPasswordWithOtp(dto.reset_token, dto.new_password);
   }
 }
