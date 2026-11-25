@@ -14,27 +14,34 @@ export const NewAgreementModal: React.FC = () => {
   const [feeAmount, setFeeAmount] = useState('50000');
   const [period, setPeriod] = useState('12 months');
   const [signMethod, setSignMethod] = useState<'basic_drawn' | 'otp_verified' | 'aadhaar_esign'>('basic_drawn');
+  const [submitting, setSubmitting] = useState(false);
 
   if (!newAgreementModalOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent, asDraft = false) => {
     e.preventDefault();
-    if (!recipientName || !recipientEmail) return;
-
-    createAgreement({
-      recipientName,
-      recipientEmail,
-      recipientPhone,
-      templateType,
-      department,
-      feeAmount: parseInt(feeAmount) || 50000,
-      period,
-      signMethod,
-      content: `This offer is made to ${recipientName} for a monthly fee of ₹${Number(feeAmount).toLocaleString('en-IN')} for ${period}. The recipient agrees to the terms and clauses set out in Schedule A.`
-    });
-
-    setNewAgreementModalOpen(false);
-    setActiveView('agreement_detail');
+    if (!recipientName || !recipientEmail || submitting) return;
+    setSubmitting(true);
+    try {
+      const created = await createAgreement({
+        recipientName,
+        recipientEmail,
+        recipientPhone,
+        templateType,
+        department,
+        feeAmount: parseInt(feeAmount) || 0,
+        period,
+        signMethod,
+        initialStatus: asDraft ? 'Draft' : signMethod === 'otp_verified' ? 'Awaiting OTP' : 'Awaiting signature',
+        content: `This offer is made to ${recipientName} for a monthly fee of ₹${Number(feeAmount || 0).toLocaleString('en-IN')} for ${period}. The recipient agrees to the terms and clauses set out in Schedule A.`
+      });
+      if (created) {
+        setNewAgreementModalOpen(false);
+        setActiveView('agreement_detail');
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -187,11 +194,20 @@ export const NewAgreementModal: React.FC = () => {
               Cancel
             </button>
             <button
+              type="button"
+              disabled={submitting || !recipientName || !recipientEmail}
+              onClick={(e) => handleSubmit(e, true)}
+              className="px-3.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 font-medium"
+            >
+              Save as Draft
+            </button>
+            <button
               type="submit"
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-white bg-brand-600 hover:bg-brand-700 font-medium shadow-subtle"
+              disabled={submitting}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50 font-medium shadow-subtle"
             >
               <Send size={13} />
-              <span>Create Agreement</span>
+              <span>{submitting ? 'Saving...' : 'Create & Send'}</span>
             </button>
           </div>
         </form>

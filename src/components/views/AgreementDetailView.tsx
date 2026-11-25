@@ -17,6 +17,9 @@ export const AgreementDetailView: React.FC = () => {
     setActiveView, 
     setRecipientModalOpen, 
     setSigningAgreement,
+    transitionAgreementStatus,
+    deleteDraftAgreement,
+    currentUser,
     branding, 
     addToast 
   } = useApp();
@@ -25,6 +28,20 @@ export const AgreementDetailView: React.FC = () => {
   const [hashVerified, setHashVerified] = useState(false);
 
   const agreement = agreements.find(a => a.id === selectedAgreementId) || agreements[0];
+
+  if (!agreement) {
+    return (
+      <div className="p-8 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-3">
+        <p className="text-sm font-medium text-slate-700 dark:text-slate-300">No agreement selected or created yet.</p>
+        <button
+          onClick={() => setActiveView('agreements')}
+          className="px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-xs font-medium"
+        >
+          Back to Agreements
+        </button>
+      </div>
+    );
+  }
 
   const handleDownloadPDF = () => {
     try {
@@ -65,7 +82,7 @@ export const AgreementDetailView: React.FC = () => {
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9.5);
-      doc.text(`Executing Company: GSIGN Pvt Ltd`, 20, 60);
+      doc.text(`Executing Company: ${currentUser?.tenantName || 'Company Workspace'}`, 20, 60);
       doc.text(`Designated Signatory: ${agreement.recipientName} (${agreement.recipientEmail})`, 20, 67);
       doc.text(`Department: ${agreement.department}   |   Tenure: ${agreement.period}`, 20, 74);
       doc.text(`Stipulated Consideration: INR ${agreement.feeAmount.toLocaleString('en-IN')}`, 20, 81);
@@ -189,17 +206,50 @@ export const AgreementDetailView: React.FC = () => {
             <span>Copy Link</span>
           </button>
 
-          {agreement.status !== 'Completed' && (
-            <button
-              onClick={() => {
-                setSigningAgreement(agreement);
-                setRecipientModalOpen(true);
-              }}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
-            >
-              <PenTool size={13} />
-              <span>Sign Document</span>
-            </button>
+          {agreement.status === 'Draft' && (
+            <>
+              <button
+                onClick={() =>
+                  transitionAgreementStatus(
+                    agreement.id,
+                    agreement.signMethod === 'otp_verified' ? 'Awaiting OTP' : 'Awaiting signature'
+                  )
+                }
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
+              >
+                <span>Send for Signing</span>
+              </button>
+              <button
+                onClick={async () => {
+                  await deleteDraftAgreement(agreement.id);
+                  setActiveView('agreements');
+                }}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800/60 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
+              >
+                Delete Draft
+              </button>
+            </>
+          )}
+
+          {(agreement.status === 'Awaiting OTP' || agreement.status === 'Awaiting signature') && (
+            <>
+              <button
+                onClick={() => {
+                  setSigningAgreement(agreement);
+                  setRecipientModalOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
+              >
+                <PenTool size={13} />
+                <span>Sign Document</span>
+              </button>
+              <button
+                onClick={() => transitionAgreementStatus(agreement.id, 'Cancelled', 'Cancelled by administrator')}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800/60 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
+              >
+                Cancel
+              </button>
+            </>
           )}
 
           <button

@@ -100,8 +100,10 @@ interface AppContextType {
   removeToast: (id: string) => void;
   // Helpers
   acknowledgePayment: (receiptId: string, ref: string) => void;
-  completeSigning: (agreementId: string, signatureData: string) => void;
-  createAgreement: (data: Partial<Agreement>) => void;
+  completeSigning: (agreementId: string, signatureData: string) => Promise<void>;
+  createAgreement: (data: Partial<Agreement> & { initialStatus?: 'Draft' | 'Awaiting OTP' | 'Awaiting signature' }) => Promise<Agreement | null>;
+  transitionAgreementStatus: (agreementId: string, status: Agreement['status'], reason?: string) => Promise<void>;
+  deleteDraftAgreement: (agreementId: string) => Promise<void>;
 }
 
 const initialAgreements: Agreement[] = [
@@ -438,10 +440,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       setCurrentRole(session.role === 'Company Admin' ? 'company_admin' : 'company_staff');
       setTenants([]);
-      const [liveUsers, liveInvoices] = await Promise.all([
+      const [liveUsers, liveInvoices, liveAgreements] = await Promise.all([
         api.getUsers().catch(() => []),
         api.getInvoices().catch(() => []),
+        api.getAgreements().catch(() => []),
       ]);
+      if (Array.isArray(liveAgreements)) {
+        setAgreements(liveAgreements);
+        if (liveAgreements.length > 0) {
+          setSelectedAgreementId(prev => prev || liveAgreements[0].id);
+        }
+      }
       setTeamMembers(
         liveUsers.map((u: any) => ({
           id: u.id,
@@ -561,58 +570,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addToast('Payment Acknowledged', `Official receipt generated with authorized sign-off.`, 'success');
   };
 
-  const completeSigning = (agreementId: string, signatureData: string) => {
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const hash = 'd82' + Math.random().toString(36).substring(2, 10) + '9c4';
-
-    setAgreements(prev => prev.map(ag => {
-      if (ag.id === agreementId) {
-        return {
-          ...ag,
-          status: 'Completed',
-          updatedAt: 'Just now',
-          signatureDataUrl: signatureData,
-          documentHash: hash,
-          auditTrail: [
-            ...ag.auditTrail,
-            { id: String(Date.now()), title: 'OTP verified', description: 'SMS delivered, verified', timestamp, type: 'otp' },
-            { id: String(Date.now() + 1), title: 'Consent recorded', description: 'Explicit e-sign consent logged', timestamp, type: 'consent' },
-            { id: String(Date.now() + 2), title: 'Signed (basic electronic)', description: `Document hash ${hash.substring(0, 4)}...${hash.substring(hash.length - 2)}`, timestamp, type: 'signed', hash },
-            { id: String(Date.now() + 3), title: 'PDF generated', description: 'Emailed to recipient and HR', timestamp, type: 'pdf' },
-          ]
-        };
-      }
-      return ag;
-    }));
-
-    addToast('Document Executed!', `Agreement ${agreementId} has been legally signed & sealed.`, 'success');
+  const completeSigning = async (agreementId: string, signatureData: string) => {
+    try {
+      const updated = await api.transitionAgreement(agreementId, {
+        status: 'Completed',
+        signature_data_url: signatureData,
+        reason: 'Recipient electronic signature & consent recorded',
+      });
+      setAgreements(prev => prev.map(ag => (ag.id === agreementId ? updated : ag)));
+      addToast('Document Executed!', `Agreement ${agreementId} has been legally signed & sealed.`, 'success');
+    } catch (err: any) {
+      addToast('Signing Error', err.message || 'Failed to complete signing.', 'error');
+    }
   };
 
-  const createAgreement = (data: Partial<Agreement>) => {
-    const id = `AGR-2026-04${Math.floor(13 + Math.random() * 50)}`;
-    const newAg: Agreement = {
-      id,
-      recipientName: data.recipientName || 'New Signatory',
-      recipientEmail: data.recipientEmail || 'signatory@example.com',
-      recipientPhone: data.recipientPhone || '+91 98765 00000',
-      templateType: data.templateType || 'Offer Letter',
-      department: data.department || 'HR',
-      status: 'Awaiting signature',
-      updatedAt: 'Just now',
-      createdAt: '25 Nov 2026 10:30',
-      feeAmount: data.feeAmount || 50000,
-      period: data.period || '12 months',
-      content: data.content || `Agreement between GSIGN and ${data.recipientName || 'Candidate'} for professional engagements.`,
-      signMethod: data.signMethod || 'basic_drawn',
-      documentHash: 'b' + Math.random().toString(36).substring(2, 12),
-      auditTrail: [
-        { id: '1', title: 'Agreement created', description: `Template v3 · by Priya, 25 Nov 10:30`, timestamp: '25 Nov 10:30', type: 'created' },
-        { id: '2', title: 'Invitation sent', description: `Email dispatched to ${data.recipientEmail}`, timestamp: '25 Nov 10:31', type: 'sent' }
-      ]
-    };
-    setAgreements(prev => [newAg, ...prev]);
-    setSelectedAgreementId(id);
-    addToast('Agreement Sent', `Secure signing link created for ${newAg.recipientName}`, 'success');
+  const createAgreement = async (
+    data: Partial<Agreement> & { initialStatus?: 'Draft' | 'Awaiting OTP' | 'Awaiting signature' }
+  ): Promise<Agreement | null> => {
+    try {
+      const created = await api.createAgreement({
+        recipient_name: data.recipientName || 'Signatory',
+        recipient_email: data.recipientEmail || '',
+        recipient_phone: data.recipientPhone || '',
+        template_type: data.templateType || 'Offer Letter',
+        department: data.department || 'HR',
+        fee_amount: Number(data.feeAmount || 0),
+        period: data.period || '12 months',
+        content:
+          data.content ||
+          `Agreement for ${data.recipientName || 'Signatory'} (${data.period || '12 months'}).`,
+        sign_method: data.signMethod || 'basic_drawn',
+        initial_status: data.initialStatus,
+      });
+      setAgreements(prev => [created, ...prev]);
+      setSelectedAgreementId(created.id);
+      addToast(
+        created.status === 'Draft' ? 'Draft Saved' : 'Agreement Sent',
+        `${created.id} (${created.status}) saved to database.`,
+        'success'
+      );
+      return created;
+    } catch (err: any) {
+      addToast('Agreement Error', err.message || 'Failed to create agreement.', 'error');
+      return null;
+    }
+  };
+
+  const transitionAgreementStatus = async (
+    agreementId: string,
+    status: Agreement['status'],
+    reason?: string
+  ) => {
+    try {
+      const updated = await api.transitionAgreement(agreementId, { status, reason });
+      setAgreements(prev => prev.map(ag => (ag.id === agreementId ? updated : ag)));
+      addToast('Status Updated', `${agreementId} transitioned to ${status}.`, 'success');
+    } catch (err: any) {
+      addToast('Transition Blocked', err.message || 'Invalid status transition.', 'error');
+    }
+  };
+
+  const deleteDraftAgreement = async (agreementId: string) => {
+    try {
+      await api.deleteDraftAgreement(agreementId);
+      setAgreements(prev => {
+        const next = prev.filter(ag => ag.id !== agreementId);
+        if (selectedAgreementId === agreementId) {
+          setSelectedAgreementId(next[0]?.id || '');
+        }
+        return next;
+      });
+      addToast('Draft Deleted', `${agreementId} permanently removed.`, 'info');
+    } catch (err: any) {
+      addToast('Delete Failed', err.message || 'Could not delete draft.', 'error');
+    }
   };
 
   return (
@@ -657,7 +688,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         removeToast,
         acknowledgePayment,
         completeSigning,
-        createAgreement
+        createAgreement,
+        transitionAgreementStatus,
+        deleteDraftAgreement
       }}
     >
       {children}

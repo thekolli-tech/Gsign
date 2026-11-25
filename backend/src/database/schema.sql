@@ -291,6 +291,56 @@ CREATE TABLE IF NOT EXISTS usage_records (
 
 CREATE INDEX IF NOT EXISTS idx_usage_records_tenant_id ON usage_records(tenant_id);
 
+-- 19. Agreements
+CREATE TABLE IF NOT EXISTS agreements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agreement_number VARCHAR(32) NOT NULL,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    created_by UUID NOT NULL REFERENCES users(id),
+    recipient_name VARCHAR(128) NOT NULL,
+    recipient_email VARCHAR(255) NOT NULL,
+    recipient_phone VARCHAR(20) NOT NULL DEFAULT '',
+    template_type VARCHAR(64) NOT NULL,
+    department VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'Draft', -- Draft, Awaiting OTP, Awaiting signature, Completed, Expired, Rejected, Cancelled
+    fee_amount NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    period VARCHAR(64) NOT NULL DEFAULT '12 months',
+    content TEXT NOT NULL,
+    sign_method VARCHAR(32) NOT NULL DEFAULT 'basic_drawn', -- basic_drawn, otp_verified, aadhaar_esign, dsc
+    signature_data_url TEXT,
+    document_hash VARCHAR(64) NOT NULL,
+    witness_required BOOLEAN NOT NULL DEFAULT FALSE,
+    witness_name VARCHAR(128),
+    sent_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_tenant_agreement_number UNIQUE (tenant_id, agreement_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agreements_tenant_id ON agreements(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_agreements_status ON agreements(status);
+CREATE INDEX IF NOT EXISTS idx_agreements_created_by ON agreements(created_by);
+
+-- 20. Agreement Audit Trail Events
+CREATE TABLE IF NOT EXISTS agreement_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agreement_id UUID NOT NULL REFERENCES agreements(id) ON DELETE CASCADE,
+    actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    title VARCHAR(128) NOT NULL,
+    description TEXT NOT NULL,
+    event_type VARCHAR(32) NOT NULL, -- created, sent, viewed, otp, consent, signed, pdf, payment
+    ip_address VARCHAR(45),
+    device_info TEXT,
+    document_hash VARCHAR(64),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agreement_events_tenant_id ON agreement_events(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_agreement_events_agreement_id ON agreement_events(agreement_id);
+
 -- =========================================================
 -- POSTGRESQL ROW-LEVEL SECURITY (RLS) POLICIES
 -- =========================================================
@@ -303,6 +353,8 @@ ALTER TABLE tenant_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agreements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agreement_events ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for table owners / application roles
 ALTER TABLE tenant_memberships FORCE ROW LEVEL SECURITY;
@@ -312,6 +364,8 @@ ALTER TABLE tenant_subscriptions FORCE ROW LEVEL SECURITY;
 ALTER TABLE payments FORCE ROW LEVEL SECURITY;
 ALTER TABLE invoices FORCE ROW LEVEL SECURITY;
 ALTER TABLE usage_records FORCE ROW LEVEL SECURITY;
+ALTER TABLE agreements FORCE ROW LEVEL SECURITY;
+ALTER TABLE agreement_events FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if any
 DROP POLICY IF EXISTS tenant_isolation_memberships ON tenant_memberships;
@@ -321,6 +375,8 @@ DROP POLICY IF EXISTS tenant_isolation_subscriptions ON tenant_subscriptions;
 DROP POLICY IF EXISTS tenant_isolation_payments ON payments;
 DROP POLICY IF EXISTS tenant_isolation_invoices ON invoices;
 DROP POLICY IF EXISTS tenant_isolation_usage ON usage_records;
+DROP POLICY IF EXISTS tenant_isolation_agreements ON agreements;
+DROP POLICY IF EXISTS tenant_isolation_agreement_events ON agreement_events;
 
 -- RLS Policy on tenant_memberships:
 -- Evaluates app.is_super_admin = 'true' OR tenant_id = app.current_tenant_id
@@ -399,6 +455,30 @@ WITH CHECK (
 
 -- RLS Policy on usage_records:
 CREATE POLICY tenant_isolation_usage ON usage_records
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on agreements:
+CREATE POLICY tenant_isolation_agreements ON agreements
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on agreement_events:
+CREATE POLICY tenant_isolation_agreement_events ON agreement_events
 FOR ALL
 USING (
     NULLIF(current_setting('app.is_super_admin', true), '') = 'true'

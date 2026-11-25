@@ -241,4 +241,70 @@ export const api = {
     const data = await parseJsonSafe(res);
     return Array.isArray(data) ? data : [];
   },
+
+  // 6. Agreements Engine
+  async getAgreements(params?: { status?: string; department?: string }) {
+    const qs = new URLSearchParams();
+    if (params?.status && params.status !== 'All') qs.set('status', params.status);
+    if (params?.department && params.department !== 'All') qs.set('department', params.department);
+    const query = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await fetch(`${API_BASE}/agreements${query}`, { credentials: 'include' });
+    if (!res.ok) return [];
+    const data = await parseJsonSafe(res);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async createAgreement(payload: {
+    recipient_name: string;
+    recipient_email: string;
+    recipient_phone?: string;
+    template_type: string;
+    department: string;
+    fee_amount?: number;
+    period?: string;
+    content: string;
+    sign_method?: string;
+    initial_status?: 'Draft' | 'Awaiting OTP' | 'Awaiting signature';
+  }) {
+    const res = await fetch(`${API_BASE}/agreements`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data.message || 'Failed to create agreement.');
+    }
+    return data;
+  },
+
+  async transitionAgreement(
+    id: string,
+    payload: { status: string; reason?: string; signature_data_url?: string }
+  ) {
+    const res = await fetch(`${API_BASE}/agreements/${encodeURIComponent(id)}/transition`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data.message || 'Failed to update agreement status.');
+    }
+    return data;
+  },
+
+  async deleteDraftAgreement(id: string) {
+    const res = await fetch(`${API_BASE}/agreements/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data.message || 'Failed to delete draft agreement.');
+    }
+    return data;
+  },
 };
