@@ -26,7 +26,7 @@ export class PermissionsGuard implements CanActivate {
       throw new ForbiddenException('User is unauthenticated');
     }
 
-    if (user.isSuperAdmin) {
+    if (user.isPlatformOwner || user.isSuperAdmin) {
       return true;
     }
 

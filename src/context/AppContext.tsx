@@ -23,7 +23,10 @@ export type ActiveView =
   | 'superadmin_tenants' 
   | 'superadmin_pricing' 
   | 'superadmin_analytics'
-  | 'signin';
+  | 'signin'
+  | 'register_company'
+  | 'pricing'
+  | 'contact_sales';
 
 export interface ToastMessage {
   id: string;

@@ -13,6 +13,12 @@ import { SessionService, ActiveSession } from './session.service';
 import { LoginDto } from './dto/login.dto';
 import { VerifyMfaDto } from './dto/verify-mfa.dto';
 import { RecoveryCodeDto } from './dto/recovery-code.dto';
+import { RegisterCompanyDto } from './dto/register-company.dto';
+import { CompleteCompanySetupDto } from './dto/complete-company-setup.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
+import { InviteMemberDto } from './dto/invite-member.dto';
+import { AcceptInviteDto } from './dto/accept-invite.dto';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class AuthService {
@@ -355,6 +361,387 @@ export class AuthService {
    */
   async logout(sessionId: string): Promise<void> {
     await this.sessionService.revokeSession(sessionId);
+  }
+
+  /**
+   * 1. Register Company (Creates pending registration + email verification token)
+   */
+  async registerCompany(dto: RegisterCompanyDto) {
+    if (!dto.terms_accepted) {
+      throw new BadRequestException('You must accept the Terms and Privacy Policy to register.');
+    }
+
+    const businessEmail = dto.business_email.trim().toLowerCase();
+    const adminEmail = dto.admin_email.trim().toLowerCase();
+
+    // Check if admin user already exists
+    const existingUser = await this.db.query('SELECT id FROM users WHERE email = $1', [adminEmail]);
+    if (existingUser.rows.length > 0) {
+      throw new BadRequestException('A user with this work email already exists. Please sign in instead.');
+    }
+
+    // Check if company registration already completed
+    const existingReg = await this.db.query(
+      `SELECT id, status FROM company_registrations WHERE business_email = $1 OR admin_email = $2`,
+      [businessEmail, adminEmail]
+    );
+    if (existingReg.rows.length > 0 && existingReg.rows[0].status === 'COMPLETED') {
+      throw new BadRequestException('A company with this business email is already registered.');
+    }
+
+    const passwordHash = await this.crypto.hashPassword(dto.password);
+    const billingCycle = dto.billing_cycle || 'monthly';
+
+    // Insert or update pending registration
+    const regRes = await this.db.query(
+      `INSERT INTO company_registrations (
+        company_name, display_name, business_email, business_phone, country, state, city,
+        address, website, admin_full_name, admin_email, admin_password_hash, selected_plan_id, billing_cycle, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'PENDING_VERIFICATION')
+      ON CONFLICT (business_email) DO UPDATE SET
+        company_name = EXCLUDED.company_name,
+        display_name = EXCLUDED.display_name,
+        business_phone = EXCLUDED.business_phone,
+        address = EXCLUDED.address,
+        admin_full_name = EXCLUDED.admin_full_name,
+        admin_email = EXCLUDED.admin_email,
+        admin_password_hash = EXCLUDED.admin_password_hash,
+        selected_plan_id = EXCLUDED.selected_plan_id,
+        billing_cycle = EXCLUDED.billing_cycle,
+        status = 'PENDING_VERIFICATION',
+        updated_at = NOW()
+      RETURNING id;`,
+      [
+        dto.company_name.trim(),
+        dto.display_name.trim(),
+        businessEmail,
+        dto.business_phone.trim(),
+        dto.country.trim(),
+        dto.state.trim(),
+        dto.city.trim(),
+        dto.address.trim(),
+        dto.website ? dto.website.trim() : null,
+        dto.admin_full_name.trim(),
+        adminEmail,
+        passwordHash,
+        dto.selected_plan_id || null,
+        billingCycle,
+      ]
+    );
+
+    const regId = regRes.rows[0].id;
+
+    // Generate single-use expiring verification token (32 bytes)
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    // Invalidate old tokens for this registration
+    await this.db.query('DELETE FROM email_verification_tokens WHERE registration_id = $1', [regId]);
+
+    // Store token valid for 24 hours
+    await this.db.query(
+      `INSERT INTO email_verification_tokens (registration_id, email, token_hash, expires_at)
+       VALUES ($1, $2, $3, NOW() + INTERVAL '24 hours');`,
+      [regId, adminEmail, tokenHash]
+    );
+
+    return {
+      success: true,
+      message: 'Company registration received. An email verification link has been sent.',
+      registration_id: regId,
+      verification_token: rawToken, // Provided in development for automated testing & instant verification
+    };
+  }
+
+  /**
+   * 2. Verify Email via Single-Use Token
+   */
+  async verifyEmail(token: string) {
+    if (!token || typeof token !== 'string') {
+      throw new BadRequestException('Verification token is required.');
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
+
+    const tokenRes = await this.db.query(
+      `SELECT id, registration_id, expires_at, used_at 
+       FROM email_verification_tokens 
+       WHERE token_hash = $1`,
+      [tokenHash]
+    );
+
+    if (tokenRes.rows.length === 0) {
+      throw new BadRequestException('Invalid verification token.');
+    }
+
+    const tokenRow = tokenRes.rows[0];
+    if (tokenRow.used_at) {
+      throw new BadRequestException('This verification token has already been used.');
+    }
+
+    if (new Date(tokenRow.expires_at) < new Date()) {
+      throw new BadRequestException('Verification token has expired. Please request a new registration link.');
+    }
+
+    // Mark token used
+    await this.db.query('UPDATE email_verification_tokens SET used_at = NOW() WHERE id = $1', [tokenRow.id]);
+
+    // Update company registration status
+    await this.db.query(
+      `UPDATE company_registrations SET status = 'EMAIL_VERIFIED', updated_at = NOW() WHERE id = $1`,
+      [tokenRow.registration_id]
+    );
+
+    return {
+      success: true,
+      message: 'Email address verified successfully. Please choose your subscription plan to complete registration.',
+      registration_id: tokenRow.registration_id,
+    };
+  }
+
+  /**
+   * 3. Complete Company Setup (Select Plan, Provision Tenant, Create First Admin, Create Subscription Awaiting Payment)
+   * NO FREE TRIAL CREATED: Workspace remains in PAYMENT_PENDING state until payment is verified.
+   */
+  async completeCompanySetup(dto: CompleteCompanySetupDto) {
+    const regRes = await this.db.query(
+      `SELECT * FROM company_registrations WHERE id = $1`,
+      [dto.registration_id]
+    );
+
+    if (regRes.rows.length === 0) {
+      throw new NotFoundException('Company registration not found.');
+    }
+
+    const reg = regRes.rows[0];
+    if (reg.status !== 'EMAIL_VERIFIED') {
+      throw new BadRequestException(
+        `Cannot complete setup: Registration status is '${reg.status}'. Email verification is required first.`
+      );
+    }
+
+    // Verify paid plan
+    const planRes = await this.db.query(
+      `SELECT id, name, slug FROM subscription_plans WHERE id = $1 AND is_active = true`,
+      [dto.plan_id]
+    );
+    if (planRes.rows.length === 0) {
+      throw new BadRequestException('Selected subscription plan is invalid or inactive.');
+    }
+    const plan = planRes.rows[0];
+
+    // Create Tenant and first Company Admin
+    const slugBase = reg.company_name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 48);
+    const tenantSlug = `${slugBase}-${Date.now().toString().slice(-6)}`;
+
+    // Begin isolated provisioning transaction
+    const client = await this.db.getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SET LOCAL app.is_super_admin = 'true';");
+
+      // 1. Create Tenant with Payment_Pending status
+      const tenantRes = await client.query(
+        `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
+         VALUES ($1, $2, $3, $4, 'Payment_Pending')
+         RETURNING id;`,
+        [reg.company_name, tenantSlug, reg.business_email, reg.business_phone]
+      );
+      const tenantId = tenantRes.rows[0].id;
+
+      // 2. Create First Company Administrator (CANNOT BE SUPER ADMIN OR PLATFORM OWNER)
+      const userRes = await client.query(
+        `INSERT INTO users (
+           email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, is_active, email_verified_at
+         ) VALUES ($1, $2, $3, $4, false, false, true, NOW())
+         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
+         RETURNING id;`,
+        [reg.admin_email, reg.admin_password_hash, reg.admin_full_name, reg.business_phone]
+      );
+      const adminUserId = userRes.rows[0].id;
+
+      // 3. Link Company Admin role in tenant_memberships
+      const roleRes = await client.query(`SELECT id FROM roles WHERE name = 'Company Admin' LIMIT 1;`);
+      const companyAdminRoleId = roleRes.rows[0].id;
+
+      await client.query(
+        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+         VALUES ($1, $2, $3, 'Executive', 'Active')
+         ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
+        [tenantId, adminUserId, companyAdminRoleId]
+      );
+
+      // 4. Create Subscription with status 'PAYMENT_PENDING' (NO FREE TRIAL)
+      await client.query(
+        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status)
+         VALUES ($1, $2, $3, 'PAYMENT_PENDING')
+         ON CONFLICT (tenant_id) DO UPDATE SET plan_id = EXCLUDED.plan_id, status = 'PAYMENT_PENDING';`,
+        [tenantId, plan.id, dto.billing_cycle || 'monthly']
+      );
+
+      // 5. Update registration record
+      await client.query(
+        `UPDATE company_registrations 
+         SET status = 'PAYMENT_PENDING', tenant_id = $1, admin_user_id = $2, selected_plan_id = $3, billing_cycle = $4, updated_at = NOW()
+         WHERE id = $5;`,
+        [tenantId, adminUserId, plan.id, dto.billing_cycle || 'monthly', reg.id]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        success: true,
+        message: 'Company workspace provisioned. Paid subscription payment required to activate access.',
+        tenant_id: tenantId,
+        admin_email: reg.admin_email,
+        subscription_status: 'PAYMENT_PENDING',
+        plan_name: plan.name,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * 4. Change Password (enforces password change on first login or user request)
+   */
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const userRes = await this.db.query(
+      `SELECT id, password_hash FROM users WHERE id = $1`,
+      [userId]
+    );
+
+    if (userRes.rows.length === 0) {
+      throw new NotFoundException('User not found.');
+    }
+
+    const user = userRes.rows[0];
+    const isCurrentValid = await this.crypto.verifyPassword(dto.current_password, user.password_hash);
+    if (!isCurrentValid) {
+      throw new UnauthorizedException('Current password does not match.');
+    }
+
+    const newHash = await this.crypto.hashPassword(dto.new_password);
+    await this.db.query(
+      `UPDATE users SET password_hash = $1, must_change_password = false, updated_at = NOW() WHERE id = $2`,
+      [newHash, userId]
+    );
+
+    return {
+      success: true,
+      message: 'Password updated successfully. You may now continue using your account.',
+    };
+  }
+
+  /**
+   * 5. Invite Employee to Company Workspace
+   */
+  async inviteMember(inviter: any, dto: InviteMemberDto) {
+    if (!inviter.tenantId) {
+      throw new BadRequestException('Invitations must be sent from within an active company tenant context.');
+    }
+
+    // SECURITY CHECK: Company admins CANNOT assign PLATFORM_OWNER or Super Admin roles
+    if (dto.role_name === 'PLATFORM_OWNER' || dto.role_name === 'Super Admin') {
+      throw new ForbiddenException('Company administrators cannot assign platform administration privileges.');
+    }
+
+    const roleRes = await this.db.query(
+      `SELECT id, name FROM roles WHERE name = $1`,
+      [dto.role_name]
+    );
+    if (roleRes.rows.length === 0) {
+      throw new BadRequestException(`Role '${dto.role_name}' does not exist.`);
+    }
+    const role = roleRes.rows[0];
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    await this.db.query(
+      `INSERT INTO invitations (tenant_id, email, role_id, department, token_hash, expires_at, created_by)
+       VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days', $6);`,
+      [inviter.tenantId, dto.email.trim().toLowerCase(), role.id, dto.department.trim(), tokenHash, inviter.id]
+    );
+
+    return {
+      success: true,
+      message: 'Employee invitation created successfully.',
+      invitation_token: rawToken, // For development/test dispatch
+    };
+  }
+
+  /**
+   * 6. Accept Employee Invitation
+   */
+  async acceptInvite(dto: AcceptInviteDto) {
+    const tokenHash = crypto.createHash('sha256').update(dto.token.trim()).digest('hex');
+
+    const inviteRes = await this.db.query(
+      `SELECT id, tenant_id, email, role_id, department, expires_at, accepted_at 
+       FROM invitations 
+       WHERE token_hash = $1`,
+      [tokenHash]
+    );
+
+    if (inviteRes.rows.length === 0) {
+      throw new BadRequestException('Invalid invitation token.');
+    }
+
+    const invite = inviteRes.rows[0];
+    if (invite.accepted_at) {
+      throw new BadRequestException('This invitation has already been accepted.');
+    }
+    if (new Date(invite.expires_at) < new Date()) {
+      throw new BadRequestException('Invitation has expired. Please contact your company administrator.');
+    }
+
+    const client = await this.db.getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SET LOCAL app.is_super_admin = 'true';");
+
+      // Check if user already exists
+      let userId: string;
+      const userRes = await client.query('SELECT id FROM users WHERE email = $1', [invite.email]);
+      if (userRes.rows.length === 0) {
+        const passwordHash = await this.crypto.hashPassword(dto.password);
+        const newUser = await client.query(
+          `INSERT INTO users (email, password_hash, full_name, is_super_admin, is_platform_owner, is_active, email_verified_at)
+           VALUES ($1, $2, $3, false, false, true, NOW())
+           RETURNING id;`,
+          [invite.email, passwordHash, dto.full_name.trim()]
+        );
+        userId = newUser.rows[0].id;
+      } else {
+        userId = userRes.rows[0].id;
+      }
+
+      // Add to tenant_memberships
+      await client.query(
+        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+         VALUES ($1, $2, $3, $4, 'Active')
+         ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
+        [invite.tenant_id, userId, invite.role_id, invite.department]
+      );
+
+      // Mark invitation accepted
+      await client.query('UPDATE invitations SET accepted_at = NOW() WHERE id = $1', [invite.id]);
+      await client.query('COMMIT');
+
+      return {
+        success: true,
+        message: 'Invitation accepted successfully. You may now sign in to your company workspace.',
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   /**

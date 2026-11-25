@@ -17,6 +17,9 @@ import { SubscriptionView } from './components/views/SubscriptionView';
 import { SuperAdminTenantsView } from './components/views/SuperAdminTenantsView';
 import { SuperAdminPricingView } from './components/views/SuperAdminPricingView';
 import { SignInView } from './components/views/SignInView';
+import { RegisterCompanyView } from './components/views/RegisterCompanyView';
+import { PricingView } from './components/views/PricingView';
+import { ContactSalesView } from './components/views/ContactSalesView';
 
 // Modals
 import { RecipientPortalModal } from './components/modals/RecipientPortalModal';
@@ -52,15 +55,23 @@ const AppContent: React.FC = () => {
         return <SuperAdminPricingView />;
       case 'signin':
         return <SignInView />;
+      case 'register_company':
+        return <RegisterCompanyView />;
+      case 'pricing':
+        return <PricingView />;
+      case 'contact_sales':
+        return <ContactSalesView />;
       default:
         return <DashboardView />;
     }
   };
 
-  if (activeView === 'signin') {
+  const isStandaloneView = ['signin', 'register_company', 'pricing', 'contact_sales'].includes(activeView);
+
+  if (isStandaloneView) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200">
-        <SignInView />
+        {renderActiveView()}
         <ToastContainer />
       </div>
     );

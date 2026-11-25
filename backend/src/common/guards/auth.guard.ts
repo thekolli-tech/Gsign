@@ -43,6 +43,9 @@ export class AuthGuard implements CanActivate {
       email: session.email,
       fullName: session.fullName,
       isSuperAdmin: session.isSuperAdmin,
+      isPlatformOwner: session.isPlatformOwner,
+      mustChangePassword: session.mustChangePassword,
+      role: session.role,
     };
     request.session = session;
     request.tenantId = session.tenantId;

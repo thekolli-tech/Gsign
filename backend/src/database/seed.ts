@@ -46,6 +46,7 @@ export async function runSeeds(connectionString?: string) {
 
     // 2. Seed System Global Roles
     const roles = [
+      { name: 'PLATFORM_OWNER', description: 'Platform Owner with full unrestricted access to platform administration', perms: Array.from(permMap.keys()) },
       { name: 'Company Admin', description: 'Full administrative access to company tenant', perms: Array.from(permMap.keys()) },
       { name: 'Legal Reviewer', description: 'Template and agreement legal compliance reviewer', perms: ['agreement:read', 'agreement:update', 'template:create', 'template:read', 'template:update', 'template:publish'] },
       { name: 'HR Manager', description: 'Human resources agreement dispatcher and team recruiter', perms: ['agreement:create', 'agreement:read', 'receipt:read', 'team:invite', 'team:manage'] },
@@ -95,6 +96,110 @@ export async function runSeeds(connectionString?: string) {
     );
     const superAdminId = superAdminRes.rows[0].id;
     console.log('Seeded Super Admin:', 'superadmin@genemax.in', `(${superAdminId})`);
+
+    // 3.1 Bootstrap Platform Owner (Genemax IT Solution)
+    const ownerEmail = process.env.GSIGN_OWNER_EMAIL || 'genemaxitsolution@gmail.com';
+    const ownerPassword = process.env.GSIGN_OWNER_INITIAL_PASSWORD || 'gsign#2k26';
+
+    const existingOwner = await client.query('SELECT id, password_hash, must_change_password FROM users WHERE email = $1', [ownerEmail]);
+    let ownerId: string;
+    if (existingOwner.rows.length === 0) {
+      const ownerPasswordHash = await argon2.hash(ownerPassword);
+      const ownerRes = await client.query(
+        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
+         VALUES ($1, $2, 'Genemax Platform Owner', '+91 99000 00000', true, true, true, true, NOW())
+         RETURNING id;`,
+        [ownerEmail, ownerPasswordHash]
+      );
+      ownerId = ownerRes.rows[0].id;
+      console.log('Bootstrapped Platform Owner (Genemax):', ownerEmail, `(${ownerId})`);
+
+      await client.query(
+        `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason, metadata)
+         VALUES ($1, $2, 'PLATFORM_OWNER', 'OWNER_BOOTSTRAP', 'USER', $3, 'Initial secure platform owner provisioning', '{"provider":"bootstrap"}');`,
+        [ownerId, ownerEmail, ownerId]
+      );
+    } else {
+      ownerId = existingOwner.rows[0].id;
+      // Ensure platform owner flags are set, but preserve existing password and must_change_password state
+      await client.query(
+        `UPDATE users SET is_super_admin = true, is_platform_owner = true WHERE id = $1;`,
+        [ownerId]
+      );
+      console.log('Platform Owner already exists. Preserving password and state for:', ownerEmail);
+    }
+
+    // 3.2 Seed Paid Subscription Plans (NO FREE TRIAL)
+    const plans = [
+      {
+        name: 'Starter Plan',
+        slug: 'starter',
+        description: 'For growing businesses and small legal teams',
+        monthly_price: 1499.00,
+        annual_price: 14990.00,
+        max_agreements: 50,
+        max_users: 3,
+        features: JSON.stringify([
+          '50 agreements per month',
+          'Up to 3 team members',
+          'Standard document templates',
+          'Cryptographic SHA-256 audit trails',
+          'Email verification workflow',
+        ]),
+      },
+      {
+        name: 'Growth Plan',
+        slug: 'growth',
+        description: 'For scaling companies requiring high-volume agreements & custom branding',
+        monthly_price: 3999.00,
+        annual_price: 39990.00,
+        max_agreements: 250,
+        max_users: 10,
+        features: JSON.stringify([
+          '250 agreements per month',
+          'Up to 10 team members',
+          'Custom branding & logos',
+          'SMS OTP recipient authentication',
+          'Automated payment acknowledgement receipts',
+          'Priority enterprise email support',
+        ]),
+      },
+      {
+        name: 'Enterprise Plan',
+        slug: 'enterprise',
+        description: 'Full-scale agreement management with unlimited capacity and custom integrations',
+        monthly_price: 9999.00,
+        annual_price: 99990.00,
+        max_agreements: -1,
+        max_users: -1,
+        features: JSON.stringify([
+          'Unlimited agreements',
+          'Unlimited team members',
+          'Dedicated account manager',
+          'Custom domain & SSO integration',
+          'Full REST API & webhook access',
+          '99.9% uptime SLA guarantee',
+        ]),
+      },
+    ];
+
+    const planMap = new Map<string, string>();
+    for (const p of plans) {
+      const res = await client.query(
+        `INSERT INTO subscription_plans (name, slug, description, monthly_price, annual_price, max_agreements_per_month, max_users, features)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (slug) DO UPDATE SET 
+           monthly_price = EXCLUDED.monthly_price,
+           annual_price = EXCLUDED.annual_price,
+           max_agreements_per_month = EXCLUDED.max_agreements_per_month,
+           max_users = EXCLUDED.max_users,
+           features = EXCLUDED.features
+         RETURNING id;`,
+        [p.name, p.slug, p.description, p.monthly_price, p.annual_price, p.max_agreements, p.max_users, p.features]
+      );
+      planMap.set(p.slug, res.rows[0].id);
+    }
+    console.log('Seeded 3 paid subscription plans (Starter, Growth, Enterprise).');
 
     // 4. Seed Primary Tenant (GSIGN Pvt Ltd)
     const tenant1Res = await client.query(
@@ -156,6 +261,24 @@ export async function runSeeds(connectionString?: string) {
        VALUES ($1, $2, $3, 'Executive', 'Active')
        ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
       [tenant2Id, user2Id, companyAdminRoleId]
+    );
+
+    // 8. Seed Tenant Subscriptions (Active for Demo Tenants)
+    const enterprisePlanId = planMap.get('enterprise')!;
+    const growthPlanId = planMap.get('growth')!;
+
+    await client.query(
+      `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
+       VALUES ($1, $2, 'annual', 'ACTIVE', NOW(), NOW() + INTERVAL '1 year')
+       ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
+      [tenant1Id, enterprisePlanId]
+    );
+
+    await client.query(
+      `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
+       VALUES ($1, $2, 'monthly', 'ACTIVE', NOW(), NOW() + INTERVAL '1 month')
+       ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
+      [tenant2Id, growthPlanId]
     );
 
     await client.query('COMMIT');

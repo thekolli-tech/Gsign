@@ -26,8 +26,8 @@ export class RolesGuard implements CanActivate {
       throw new ForbiddenException('User is unauthenticated');
     }
 
-    // Super Admin inherits all roles
-    if (user.isSuperAdmin) {
+    // Platform Owner and Super Admin inherit all role permissions
+    if (user.isPlatformOwner || user.isSuperAdmin) {
       return true;
     }
 

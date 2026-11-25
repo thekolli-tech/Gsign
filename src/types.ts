@@ -1,6 +1,6 @@
 export type ThemeMode = 'light' | 'dark';
 
-export type UserRole = 'super_admin' | 'company_admin' | 'company_staff' | 'signatory';
+export type UserRole = 'platform_owner' | 'super_admin' | 'company_admin' | 'company_staff' | 'signatory';
 
 export type AgreementStatus = 
   | 'Completed' 

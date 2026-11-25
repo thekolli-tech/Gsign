@@ -59,6 +59,8 @@ describe('Security Guards & RBAC Enforcement (Milestone 1)', () => {
         email: 'user@gsign.in',
         fullName: 'Test User',
         isSuperAdmin: false,
+        isPlatformOwner: false,
+        mustChangePassword: false,
         tenantId: 't-1',
         role: 'Company Admin',
         permissions: ['agreement:create'],

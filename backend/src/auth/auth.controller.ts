@@ -17,6 +17,11 @@ import { LoginDto } from './dto/login.dto';
 import { VerifyMfaDto, ConfirmEnrollmentDto } from './dto/verify-mfa.dto';
 import { RecoveryCodeDto } from './dto/recovery-code.dto';
 import { DisableMfaDto } from './dto/disable-mfa.dto';
+import { RegisterCompanyDto } from './dto/register-company.dto';
+import { CompleteCompanySetupDto } from './dto/complete-company-setup.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
+import { InviteMemberDto } from './dto/invite-member.dto';
+import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { Public, CurrentUser, CurrentSession } from '../common/decorators/auth.decorators';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { ActiveSession } from './session.service';
@@ -205,5 +210,68 @@ export class AuthController {
     @Body() dto: DisableMfaDto
   ) {
     return this.authService.disableMfa(user.id, dto.password, dto.code);
+  }
+
+  @Public()
+  @Post('register-company')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Register a new company (creates pending registration with email verification)' })
+  @ApiResponse({ status: 201, description: 'Registration received. Verification email dispatched.' })
+  async registerCompany(@Body() dto: RegisterCompanyDto) {
+    return this.authService.registerCompany(dto);
+  }
+
+  @Public()
+  @Get('verify-email')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify company registration email using single-use secure token' })
+  @ApiResponse({ status: 200, description: 'Email address verified successfully' })
+  async verifyEmail(@Req() req: Request) {
+    const token = req.query.token as string;
+    return this.authService.verifyEmail(token);
+  }
+
+  @Public()
+  @Post('complete-company-setup')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Complete company setup after email verification (provisions tenant awaiting paid subscription)' })
+  @ApiResponse({ status: 201, description: 'Tenant provisioned in PAYMENT_PENDING state (No free trial)' })
+  async completeCompanySetup(@Body() dto: CompleteCompanySetupDto) {
+    return this.authService.completeCompanySetup(dto);
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Change user password (required on first login for Platform Owner)' })
+  @ApiResponse({ status: 200, description: 'Password changed successfully' })
+  async changePassword(
+    @CurrentUser() user: any,
+    @Body() dto: ChangePasswordDto
+  ) {
+    return this.authService.changePassword(user.id, dto);
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('team/invite')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Invite an employee to the company workspace (No public registration)' })
+  @ApiResponse({ status: 201, description: 'Employee invitation dispatched' })
+  async inviteMember(
+    @CurrentUser() user: any,
+    @Body() dto: InviteMemberDto
+  ) {
+    return this.authService.inviteMember(user, dto);
+  }
+
+  @Public()
+  @Post('accept-invite')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Accept an employee invitation and set password' })
+  @ApiResponse({ status: 200, description: 'Invitation accepted and account established' })
+  async acceptInvite(@Body() dto: AcceptInviteDto) {
+    return this.authService.acceptInvite(dto);
   }
 }

@@ -8,11 +8,12 @@ import {
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { DatabaseService } from '../database/database.service';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { SubscriptionGuard } from '../common/guards/subscription.guard';
 import { CurrentTenant, CurrentUser } from '../common/decorators/auth.decorators';
 
 @ApiTags('Users')
 @ApiBearerAuth()
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, SubscriptionGuard)
 @Controller('users')
 export class UsersController {
   constructor(private readonly db: DatabaseService) {}

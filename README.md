@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # GSIGN — Enterprise Digital Agreement & E-Signature Platform
 > **Product Owner**: Genemax IT Solution Private Limited  
 > **Brand**: GSIGN (Powered by Genemax Sign)  
@@ -108,3 +109,7 @@ npm run build
 npm run preview
 ```
 Visit `http://localhost:4173/` in your browser.
+=======
+# Gsign
+Multi-tenant SaaS digital agreement and e-signature platform (Next.js/React/TS, NestJS, PostgreSQL, Redis/BullMQ) for templates, secure signing links, basic e-signatures and verified eSign/DSC workflows, PDFs, payment receipts, audit logs, and tenant isolation.
+>>>>>>> bcf6ae7297205596633980b7e597e72a31f817b3

@@ -10,6 +10,8 @@ export interface ActiveSession {
   email: string;
   fullName: string;
   isSuperAdmin: boolean;
+  isPlatformOwner: boolean;
+  mustChangePassword: boolean;
   tenantId: string | null;
   role: string | null;
   permissions: string[];
@@ -47,7 +49,7 @@ export class SessionService {
 
     // 1. Fetch user details and permissions
     const userRes = await this.db.query(
-      `SELECT id, email, full_name, is_super_admin, is_active FROM users WHERE id = $1`,
+      `SELECT id, email, full_name, is_super_admin, is_platform_owner, must_change_password, is_active FROM users WHERE id = $1`,
       [userId]
     );
     if (userRes.rows.length === 0) {
@@ -58,7 +60,11 @@ export class SessionService {
     let role: string | null = null;
     let permissions: string[] = [];
 
-    if (tenantId) {
+    if (user.is_platform_owner) {
+      role = 'PLATFORM_OWNER';
+      const allPerms = await this.db.query(`SELECT code FROM permissions`);
+      permissions = allPerms.rows.map(r => r.code);
+    } else if (tenantId) {
       const memberRes = await this.db.query(
         `SELECT tm.role_id, r.name as role_name 
          FROM tenant_memberships tm
@@ -96,7 +102,9 @@ export class SessionService {
       userId: user.id,
       email: user.email,
       fullName: user.full_name,
-      isSuperAdmin: user.is_super_admin,
+      isSuperAdmin: Boolean(user.is_super_admin),
+      isPlatformOwner: Boolean(user.is_platform_owner),
+      mustChangePassword: Boolean(user.must_change_password),
       tenantId,
       role,
       permissions,
@@ -135,7 +143,7 @@ export class SessionService {
     // 2. Fallback to PostgreSQL
     const res = await this.db.query(
       `SELECT s.id, s.user_id, s.tenant_id, s.expires_at, s.revoked_at,
-              u.email, u.full_name, u.is_super_admin, u.is_active
+              u.email, u.full_name, u.is_super_admin, u.is_platform_owner, u.must_change_password, u.is_active
        FROM sessions s
        JOIN users u ON s.user_id = u.id
        WHERE s.id = $1`,
@@ -154,7 +162,11 @@ export class SessionService {
     let role: string | null = null;
     let permissions: string[] = [];
 
-    if (row.tenant_id) {
+    if (row.is_platform_owner) {
+      role = 'PLATFORM_OWNER';
+      const allPerms = await this.db.query(`SELECT code FROM permissions`);
+      permissions = allPerms.rows.map(r => r.code);
+    } else if (row.tenant_id) {
       const memberRes = await this.db.query(
         `SELECT r.name as role_name, rp.permission_id, p.code
          FROM tenant_memberships tm
@@ -179,7 +191,9 @@ export class SessionService {
       userId: row.user_id,
       email: row.email,
       fullName: row.full_name,
-      isSuperAdmin: row.is_super_admin,
+      isSuperAdmin: Boolean(row.is_super_admin),
+      isPlatformOwner: Boolean(row.is_platform_owner),
+      mustChangePassword: Boolean(row.must_change_password),
       tenantId: row.tenant_id,
       role,
       permissions,
