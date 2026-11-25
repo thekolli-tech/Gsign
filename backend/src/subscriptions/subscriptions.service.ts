@@ -10,11 +10,98 @@ export class SubscriptionsService {
    * Get all active paid subscription plans (Public)
    */
   async getPlans() {
+    // Ensure canonical pricing tiers are synced
+    const canonical = [
+      {
+        name: 'Starter Plan',
+        slug: 'starter',
+        description: '25 documents/month; 2 users; standard templates',
+        monthly_price: 499.0,
+        annual_price: 4990.0,
+        max_agreements: 25,
+        max_users: 2,
+        features: JSON.stringify([
+          '25 documents/month',
+          '2 users',
+          'Standard templates',
+          'Email OTP verification & audit trail',
+        ]),
+      },
+      {
+        name: 'Business Plan',
+        slug: 'business',
+        description: '100 documents/month; 5 users; custom branding and templates',
+        monthly_price: 1499.0,
+        annual_price: 14990.0,
+        max_agreements: 100,
+        max_users: 5,
+        features: JSON.stringify([
+          '100 documents/month',
+          '5 users',
+          'Custom branding and templates',
+          'Email OTP verification & audit trail',
+        ]),
+      },
+      {
+        name: 'Professional Plan',
+        slug: 'professional',
+        description: '300 documents/month; 15 users; advanced workflows and reports',
+        monthly_price: 2999.0,
+        annual_price: 29990.0,
+        max_agreements: 300,
+        max_users: 15,
+        features: JSON.stringify([
+          '300 documents/month',
+          '15 users',
+          'Advanced workflows and reports',
+          'Email OTP verification & audit trail',
+        ]),
+      },
+      {
+        name: 'Enterprise Plan',
+        slug: 'enterprise',
+        description: 'Higher volume, custom domain, advanced branding, integrations and support',
+        monthly_price: 0.0,
+        annual_price: 0.0,
+        max_agreements: -1,
+        max_users: -1,
+        features: JSON.stringify([
+          'Custom document volume',
+          'Unlimited team members',
+          'Custom domain & advanced branding',
+          'Dedicated integrations and priority support',
+        ]),
+      },
+    ];
+
+    const check = await this.db.query(
+      `SELECT slug FROM subscription_plans WHERE slug = 'business' AND is_active = true`
+    );
+    if (check.rows.length === 0) {
+      await this.db.query(`UPDATE subscription_plans SET is_active = false WHERE slug = 'growth'`);
+      for (const p of canonical) {
+        await this.db.query(
+          `INSERT INTO subscription_plans (name, slug, description, monthly_price, annual_price, max_agreements_per_month, max_users, features, is_active)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+           ON CONFLICT (slug) DO UPDATE SET
+             name = EXCLUDED.name,
+             description = EXCLUDED.description,
+             monthly_price = EXCLUDED.monthly_price,
+             annual_price = EXCLUDED.annual_price,
+             max_agreements_per_month = EXCLUDED.max_agreements_per_month,
+             max_users = EXCLUDED.max_users,
+             features = EXCLUDED.features,
+             is_active = true;`,
+          [p.name, p.slug, p.description, p.monthly_price, p.annual_price, p.max_agreements, p.max_users, p.features]
+        );
+      }
+    }
+
     const res = await this.db.query(
       `SELECT id, name, slug, description, monthly_price, annual_price, max_agreements_per_month, max_users, features
        FROM subscription_plans
        WHERE is_active = true
-       ORDER BY monthly_price ASC;`
+       ORDER BY CASE WHEN slug = 'enterprise' THEN 1 ELSE 0 END, monthly_price ASC;`
     );
     return res.rows;
   }

@@ -29,6 +29,8 @@ export const Sidebar: React.FC = () => {
     setActiveView, 
     currentRole, 
     setCurrentRole, 
+    currentUser,
+    setCurrentUser,
     branding, 
     agreements,
     setRecipientModalOpen,
@@ -167,47 +169,20 @@ export const Sidebar: React.FC = () => {
         </nav>
       </div>
 
-      {/* Role Switcher & User Footer */}
+      {/* User Footer */}
       <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950 transition-colors">
-        {!isPlatformOwner && (
-          <div className="mb-2 px-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
-            <span>Context</span>
-            <button
-              onClick={() => {
-                if (isSuperAdmin) {
-                  setCurrentRole('company_admin');
-                  setActiveView('dashboard');
-                } else {
-                  setCurrentRole('super_admin');
-                  setActiveView('superadmin_tenants');
-                }
-              }}
-              className="text-brand-600 dark:text-brand-400 hover:text-brand-700 dark:hover:text-brand-300 font-medium flex items-center gap-0.5 hover:underline"
-            >
-              {isSuperAdmin ? 'Switch to GSIGN' : 'Super Admin'}
-              <ChevronRight size={11} />
-            </button>
-          </div>
-        )}
-
         <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-subtle">
           <div className="w-6 h-6 rounded bg-brand-600 flex items-center justify-center text-white font-bold text-[10px] flex-shrink-0">
-            {isSuperAdmin ? 'GM' : 'GS'}
+            {isPlatformOwner ? 'GM' : (currentUser?.fullName?.slice(0, 2).toUpperCase() || 'GS')}
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-[11px] font-medium text-slate-900 dark:text-white truncate">
               {isPlatformOwner
                 ? 'Genemax IT Solution'
-                : isSuperAdmin
-                  ? 'Sunil G (Super Admin)'
-                  : 'Priya N (HR Admin)'}
+                : (currentUser?.fullName || 'Workspace User')}
             </p>
             <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-              {isPlatformOwner
-                ? 'genemaxitsolution@gmail.com'
-                : isSuperAdmin
-                  ? 'superadmin@genemax.in'
-                  : 'priya@gsign.in'}
+              {currentUser?.email || (isPlatformOwner ? 'genemaxitsolution@gmail.com' : '')}
             </p>
           </div>
           <ShieldCheck size={14} className="text-emerald-500 dark:text-emerald-400 flex-shrink-0" />
@@ -217,6 +192,8 @@ export const Sidebar: React.FC = () => {
           type="button"
           onClick={async () => {
             await api.logout().catch(() => {});
+            sessionStorage.removeItem('gsign_active_view');
+            setCurrentUser(null);
             setCurrentRole('company_admin');
             setActiveView('signin');
             addToast('Signed Out', 'Your session has been ended.', 'info');

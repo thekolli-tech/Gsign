@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { 
   Agreement, 
   Receipt, 
@@ -9,6 +9,7 @@ import {
   ThemeMode,
   UserRole 
 } from '../types';
+import { api } from '../services/api';
 
 export type ActiveView = 
   | 'dashboard' 
@@ -35,6 +36,17 @@ export interface ToastMessage {
   type: 'success' | 'info' | 'warning' | 'error';
 }
 
+export interface SessionUser {
+  userId: string;
+  email: string;
+  fullName: string;
+  isSuperAdmin: boolean;
+  isPlatformOwner: boolean;
+  tenantId: string | null;
+  tenantName: string;
+  role: string | null;
+}
+
 interface AppContextType {
   theme: ThemeMode;
   toggleTheme: () => void;
@@ -42,6 +54,18 @@ interface AppContextType {
   setActiveView: (view: ActiveView) => void;
   currentRole: UserRole;
   setCurrentRole: (role: UserRole) => void;
+  currentUser: SessionUser | null;
+  setCurrentUser: (user: SessionUser | null) => void;
+  authLoading: boolean;
+  loadLiveWorkspaceData: (session: {
+    userId: string;
+    email: string;
+    fullName: string;
+    isSuperAdmin: boolean;
+    isPlatformOwner: boolean;
+    tenantId: string | null;
+    role: string | null;
+  }) => Promise<void>;
   selectedAgreementId: string;
   setSelectedAgreementId: (id: string) => void;
   agreements: Agreement[];
@@ -298,14 +322,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return 'light';
   });
 
-  const [activeView, setActiveView] = useState<ActiveView>('signin');
+  const [activeView, setActiveViewState] = useState<ActiveView>(() => {
+    const saved = sessionStorage.getItem('gsign_active_view') as ActiveView | null;
+    if (saved && ['signin', 'register_company', 'pricing', 'contact_sales'].includes(saved)) {
+      return saved;
+    }
+    return 'signin';
+  });
   const [currentRole, setCurrentRole] = useState<UserRole>('company_admin');
-  const [selectedAgreementId, setSelectedAgreementId] = useState<string>('AGR-2026-0412');
-  const [agreements, setAgreements] = useState<Agreement[]>(initialAgreements);
-  const [receipts, setReceipts] = useState<Receipt[]>(initialReceipts);
-  const [teamMembers, setTeamMembers] = useState<TeamMember[]>(initialTeam);
-  const [tenants, setTenants] = useState<Tenant[]>(initialTenants);
-  const [pricingPlans, setPricingPlans] = useState<PricingPlan[]>(initialPlans);
+  const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [selectedAgreementId, setSelectedAgreementId] = useState<string>('');
+  const [agreements, setAgreements] = useState<Agreement[]>([]);
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [pricingPlans, setPricingPlans] = useState<PricingPlan[]>([
+    {
+      id: 'starter',
+      name: 'Starter',
+      priceMonthly: 499,
+      documentsLimit: 25,
+      usersLimit: 2,
+      overageRule: '₹15 per extra document',
+    },
+    {
+      id: 'business',
+      name: 'Business',
+      priceMonthly: 1499,
+      documentsLimit: 100,
+      usersLimit: 5,
+      overageRule: '₹10 per extra document',
+    },
+    {
+      id: 'professional',
+      name: 'Professional',
+      priceMonthly: 2999,
+      documentsLimit: 300,
+      usersLimit: 15,
+      overageRule: '₹5 per extra document',
+    },
+    {
+      id: 'enterprise',
+      name: 'Enterprise',
+      priceMonthly: 'Custom',
+      documentsLimit: 'Unlimited',
+      usersLimit: 'Unlimited',
+      overageRule: 'Custom SLA',
+    }
+  ]);
+
+  const setActiveView = useCallback((view: ActiveView) => {
+    sessionStorage.setItem('gsign_active_view', view);
+    setActiveViewState(view);
+  }, []);
   const [branding, setBranding] = useState<BrandingSettings>(initialBranding);
   const [recipientModalOpen, setRecipientModalOpen] = useState(false);
   const [signingAgreement, setSigningAgreement] = useState<Agreement | null>(null);
@@ -327,6 +397,130 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     document.documentElement.style.setProperty('--brand-custom-color', branding.brandColor);
   }, [branding.brandColor]);
+
+  const loadLiveWorkspaceData = useCallback(async (session: {
+    userId: string;
+    email: string;
+    fullName: string;
+    isSuperAdmin: boolean;
+    isPlatformOwner: boolean;
+    tenantId: string | null;
+    role: string | null;
+  }) => {
+    const isAdminRoot = Boolean(session.isPlatformOwner || session.isSuperAdmin || session.role === 'PLATFORM_OWNER');
+    const tenantInfo = await api.getCurrentTenant().catch(() => null);
+    const tenantName = isAdminRoot
+      ? 'Genemax IT Solution'
+      : tenantInfo?.name || 'Company Workspace';
+
+    setCurrentUser({
+      ...session,
+      tenantName,
+    });
+
+    if (isAdminRoot) {
+      setCurrentRole(session.isPlatformOwner || session.role === 'PLATFORM_OWNER' ? 'platform_owner' : 'super_admin');
+      const liveTenants = await api.getAllTenants().catch(() => []);
+      setTenants(
+        liveTenants.map((t: any) => ({
+          id: t.id,
+          company: t.name,
+          plan: (t.plan_name?.replace(' Plan', '') || 'Starter') as Tenant['plan'],
+          status: t.status === 'Active' ? 'Active' : 'Payment failed',
+          docsThisMonth: 0,
+          domain: t.slug || '—',
+          adminEmail: t.contact_email || '—',
+        }))
+      );
+      setTeamMembers([]);
+      setReceipts([]);
+      setAgreements([]);
+    } else {
+      setCurrentRole(session.role === 'Company Admin' ? 'company_admin' : 'company_staff');
+      setTenants([]);
+      const [liveUsers, liveInvoices] = await Promise.all([
+        api.getUsers().catch(() => []),
+        api.getInvoices().catch(() => []),
+      ]);
+      setTeamMembers(
+        liveUsers.map((u: any) => ({
+          id: u.id,
+          name: u.full_name,
+          email: u.email,
+          role: (u.role_name || 'Member') as TeamMember['role'],
+          department: u.department || 'General',
+          status: u.is_active ? 'Active' : 'Deactivated',
+          joinedAt: u.joined_at ? new Date(u.joined_at).toLocaleDateString() : '—',
+        }))
+      );
+      setReceipts(
+        liveInvoices.map((inv: any) => ({
+          id: inv.invoice_number || inv.id,
+          agreementId: inv.id,
+          payer: tenantName,
+          amount: Number(inv.total_amount || inv.amount || 0),
+          amountInWords: `INR ${Number(inv.total_amount || inv.amount || 0).toLocaleString('en-IN')} only`,
+          mode: 'Credit Card',
+          status: inv.status === 'PAID' ? 'Issued' : 'Payment not confirmed',
+          date: inv.created_at ? new Date(inv.created_at).toLocaleDateString() : '—',
+          txRef: inv.invoice_number || inv.id,
+          purpose: 'GSIGN Subscription',
+          acknowledgedBy: 'Platform Billing',
+        }))
+      );
+    }
+
+    const livePlans = await api.getSubscriptionPlans().catch(() => []);
+    if (Array.isArray(livePlans) && livePlans.length > 0) {
+      setPricingPlans(
+        livePlans.map((p: any) => ({
+          id: p.id,
+          name: p.name.replace(' Plan', '') as PricingPlan['name'],
+          priceMonthly: Number(p.monthly_price) === 0 ? 'Custom' : Number(p.monthly_price),
+          documentsLimit: p.max_agreements_per_month === -1 ? 'Unlimited' : Number(p.max_agreements_per_month),
+          usersLimit: p.max_users === -1 ? 'Unlimited' : Number(p.max_users),
+          overageRule: p.slug === 'enterprise' ? 'Custom SLA' : 'Standard overage',
+        }))
+      );
+    }
+  }, []);
+
+  // Restore active session on page refresh
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const session = await api.getMe();
+        if (!mounted) return;
+        if (session && session.userId) {
+          await loadLiveWorkspaceData(session);
+          const isAdminRoot = Boolean(session.isPlatformOwner || session.isSuperAdmin || session.role === 'PLATFORM_OWNER');
+          const saved = sessionStorage.getItem('gsign_active_view') as ActiveView | null;
+          const publicViews: ActiveView[] = ['signin', 'register_company', 'pricing', 'contact_sales'];
+          if (saved && !publicViews.includes(saved)) {
+            if (!isAdminRoot && saved.startsWith('superadmin_')) {
+              setActiveView('dashboard');
+            } else {
+              setActiveView(saved);
+            }
+          } else {
+            setActiveView(
+              isAdminRoot
+                ? 'superadmin_tenants'
+                : session.role === 'Company Admin'
+                  ? 'dashboard'
+                  : 'agreements'
+            );
+          }
+        }
+      } finally {
+        if (mounted) setAuthLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [loadLiveWorkspaceData, setActiveView]);
 
   const toggleTheme = () => {
     setTheme(prev => {
@@ -430,6 +624,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setActiveView,
         currentRole,
         setCurrentRole,
+        currentUser,
+        setCurrentUser,
+        authLoading,
+        loadLiveWorkspaceData,
         selectedAgreementId,
         setSelectedAgreementId,
         agreements,

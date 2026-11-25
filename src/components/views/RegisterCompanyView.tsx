@@ -51,9 +51,9 @@ export const RegisterCompanyView: React.FC = () => {
       .catch(() => {
         // Fallback default plans
         setPlans([
-          { id: 'starter-id', name: 'Starter Plan', monthly_price: 1499, annual_price: 14990, max_agreements_per_month: 50, max_users: 3, features: ['50 agreements/mo', '3 team members', 'Standard templates'] },
-          { id: 'growth-id', name: 'Growth Plan', monthly_price: 3999, annual_price: 39990, max_agreements_per_month: 250, max_users: 10, features: ['250 agreements/mo', '10 team members', 'Custom branding'] },
-          { id: 'enterprise-id', name: 'Enterprise Plan', monthly_price: 9999, annual_price: 99990, max_agreements_per_month: -1, max_users: -1, features: ['Unlimited agreements', 'Unlimited team members', 'Dedicated manager'] },
+          { id: 'starter-id', slug: 'starter', name: 'Starter Plan', description: '25 documents/month; 2 users; standard templates', monthly_price: 499, annual_price: 4990, max_agreements_per_month: 25, max_users: 2, features: ['25 documents/mo', '2 users', 'Standard templates'] },
+          { id: 'business-id', slug: 'business', name: 'Business Plan', description: '100 documents/month; 5 users; custom branding and templates', monthly_price: 1499, annual_price: 14990, max_agreements_per_month: 100, max_users: 5, features: ['100 documents/mo', '5 users', 'Custom branding'] },
+          { id: 'professional-id', slug: 'professional', name: 'Professional Plan', description: '300 documents/month; 15 users; advanced workflows and reports', monthly_price: 2999, annual_price: 29990, max_agreements_per_month: 300, max_users: 15, features: ['300 documents/mo', '15 users', 'Advanced workflows'] },
         ]);
       });
   }, []);
@@ -472,8 +472,8 @@ export const RegisterCompanyView: React.FC = () => {
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {plans.map((p) => {
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {plans.filter(p => p.slug !== 'enterprise' && Number(p.monthly_price) > 0).map((p) => {
                   const price = billingCycle === 'annual' ? p.annual_price : p.monthly_price;
                   const isSelected = selectedPlanId === p.id;
                   return (

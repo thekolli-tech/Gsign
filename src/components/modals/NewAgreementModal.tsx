@@ -173,7 +173,7 @@ export const NewAgreementModal: React.FC = () => {
               className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-100 outline-none cursor-pointer"
             >
               <option value="basic_drawn">Basic electronic (drawn signature)</option>
-              <option value="otp_verified">OTP SMS Verified</option>
+              <option value="otp_verified">Email OTP Verified</option>
               <option value="aadhaar_esign">Aadhaar eSign</option>
             </select>
           </div>

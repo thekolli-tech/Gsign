@@ -22,6 +22,8 @@ export const Header: React.FC = () => {
     setSelectedAgreementId,
     setActiveView,
     setCurrentRole,
+    currentUser,
+    setCurrentUser,
     addToast
   } = useApp();
 
@@ -51,9 +53,10 @@ export const Header: React.FC = () => {
     : [];
 
   const getTitle = () => {
+    const tenantLabel = currentUser?.tenantName || 'Company Workspace';
     switch (activeView) {
       case 'dashboard':
-        return { main: 'Dashboard', sub: 'GSIGN Pvt Ltd' };
+        return { main: 'Dashboard', sub: tenantLabel };
       case 'agreements':
         return { main: 'Agreements', sub: 'All agreements across departments' };
       case 'agreement_detail':
@@ -200,6 +203,8 @@ export const Header: React.FC = () => {
           type="button"
           onClick={async () => {
             await api.logout().catch(() => {});
+            sessionStorage.removeItem('gsign_active_view');
+            setCurrentUser(null);
             setCurrentRole('company_admin');
             setActiveView('signin');
             addToast('Signed Out', 'Your session has been ended.', 'info');

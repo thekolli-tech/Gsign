@@ -8,60 +8,75 @@ export const PricingView: React.FC = () => {
 
   const plans = [
     {
-      name: 'Starter Plan',
+      name: 'Starter',
       slug: 'starter',
-      description: 'Ideal for small businesses and boutique law practices',
+      description: '25 documents/month; 2 users; standard templates',
+      monthlyPrice: 499,
+      annualPrice: 4990,
+      agreements: '25 documents / month',
+      users: 'Up to 2 users',
+      features: [
+        '25 documents per month',
+        'Up to 2 team users',
+        'Standard templates',
+        'Email OTP recipient verification',
+        'Cryptographic SHA-256 audit trail',
+      ],
+      popular: false,
+      isCustom: false,
+    },
+    {
+      name: 'Business',
+      slug: 'business',
+      description: '100 documents/month; 5 users; custom branding and templates',
       monthlyPrice: 1499,
       annualPrice: 14990,
-      agreements: '50 agreements / month',
-      users: 'Up to 3 team members',
+      agreements: '100 documents / month',
+      users: 'Up to 5 users',
       features: [
-        '50 electronic agreements/mo',
-        'Up to 3 team seats',
-        'Standard document templates',
-        'Cryptographic SHA-256 hash seals',
-        'Email verification & audit logs',
-        'Standard business hours support',
-      ],
-      popular: false,
-    },
-    {
-      name: 'Growth Plan',
-      slug: 'growth',
-      description: 'For growing enterprises requiring custom branding and high volume',
-      monthlyPrice: 3999,
-      annualPrice: 39990,
-      agreements: '250 agreements / month',
-      users: 'Up to 10 team members',
-      features: [
-        '250 electronic agreements/mo',
-        'Up to 10 team seats',
-        'Custom brand logos and styling',
-        'SMS OTP recipient authentication',
-        'Automated payment acknowledgement receipts',
-        'Role-based permissions & departments',
-        'Priority enterprise email support',
+        '100 documents per month',
+        'Up to 5 team users',
+        'Custom branding and templates',
+        'Email OTP recipient verification',
+        'Automated payment receipts',
       ],
       popular: true,
+      isCustom: false,
     },
     {
-      name: 'Enterprise Plan',
-      slug: 'enterprise',
-      description: 'Full-scale agreement management with unlimited volume and dedicated account team',
-      monthlyPrice: 9999,
-      annualPrice: 99990,
-      agreements: 'Unlimited agreements',
-      users: 'Unlimited team members',
+      name: 'Professional',
+      slug: 'professional',
+      description: '300 documents/month; 15 users; advanced workflows and reports',
+      monthlyPrice: 2999,
+      annualPrice: 29990,
+      agreements: '300 documents / month',
+      users: 'Up to 15 users',
       features: [
-        'Unlimited electronic agreements',
-        'Unlimited team members & admins',
-        'Dedicated enterprise account manager',
-        'Custom domain & SSO SAML/OIDC integration',
-        'Full REST API & webhook dispatch',
-        '99.9% uptime SLA guarantee',
-        '24/7 priority emergency support',
+        '300 documents per month',
+        'Up to 15 team users',
+        'Advanced workflows and reports',
+        'Email OTP recipient verification',
+        'Role-based permissions & departments',
       ],
       popular: false,
+      isCustom: false,
+    },
+    {
+      name: 'Enterprise',
+      slug: 'enterprise',
+      description: 'Higher volume, custom domain, advanced branding, integrations and support',
+      monthlyPrice: 0,
+      annualPrice: 0,
+      agreements: 'Custom volume',
+      users: 'Unlimited users',
+      features: [
+        'Higher document volume',
+        'Custom domain & advanced branding',
+        'Custom integrations & REST API',
+        'Dedicated enterprise support & SLA',
+      ],
+      popular: false,
+      isCustom: true,
     },
   ];
 
@@ -131,7 +146,7 @@ export const PricingView: React.FC = () => {
         </div>
 
         {/* Pricing Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 pt-4">
           {plans.map((plan) => {
             const price = billingCycle === 'annual' ? plan.annualPrice : plan.monthlyPrice;
             return (
@@ -160,15 +175,30 @@ export const PricingView: React.FC = () => {
                   </div>
 
                   <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
-                    <div className="flex items-baseline gap-1">
-                      <span className="text-3xl font-extrabold text-slate-900 dark:text-white">
-                        ₹{price.toLocaleString('en-IN')}
-                      </span>
-                      <span className="text-xs text-slate-400">/{billingCycle === 'annual' ? 'year' : 'month'}</span>
-                    </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">
-                      {billingCycle === 'annual' ? 'Billed annually' : 'Billed monthly'}
-                    </div>
+                    {plan.isCustom ? (
+                      <>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-3xl font-extrabold text-slate-900 dark:text-white">
+                            Custom
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Tailored enterprise pricing
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-3xl font-extrabold text-slate-900 dark:text-white">
+                            ₹{price.toLocaleString('en-IN')}
+                          </span>
+                          <span className="text-xs text-slate-400">/{billingCycle === 'annual' ? 'year' : 'month'}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          {billingCycle === 'annual' ? 'Billed annually' : 'Billed monthly'}
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
@@ -186,14 +216,14 @@ export const PricingView: React.FC = () => {
 
                 <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
                   <button
-                    onClick={() => setActiveView('register_company')}
+                    onClick={() => setActiveView(plan.isCustom ? 'contact_sales' : 'register_company')}
                     className={`w-full py-2.5 rounded-lg font-medium text-xs transition-colors shadow-subtle ${
                       plan.popular
                         ? 'bg-brand-600 hover:bg-brand-700 text-white'
                         : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-slate-200'
                     }`}
                   >
-                    Register Company on {plan.name.replace(' Plan', '')}
+                    {plan.isCustom ? 'Contact Sales' : `Register Company on ${plan.name}`}
                   </button>
                 </div>
               </div>

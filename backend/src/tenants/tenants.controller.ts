@@ -20,11 +20,11 @@ export class TenantsController {
     @CurrentUser() user: any
   ) {
     if (!tenantId) {
-      if (user.isSuperAdmin) {
+      if (user.isSuperAdmin || user.isPlatformOwner) {
         return {
           id: null,
-          name: 'GSIGN Global Root',
-          slug: 'root',
+          name: 'Genemax IT Solution',
+          slug: 'genemax-root',
           status: 'Active',
           isRoot: true,
         };
@@ -50,14 +50,20 @@ export class TenantsController {
   @ApiOperation({ summary: 'List all platform tenants (Super Admin only)' })
   @ApiResponse({ status: 200, description: 'All tenants' })
   async getAllTenants() {
-    const res = await this.db.query(
-      `SELECT t.id, t.name, t.slug, t.cin, t.gstin, t.contact_email, t.status, t.created_at,
-              COUNT(DISTINCT tm.user_id) as member_count
-       FROM tenants t
-       LEFT JOIN tenant_memberships tm ON t.id = tm.tenant_id
-       GROUP BY t.id
-       ORDER BY t.created_at DESC`
-    );
+    const res = await this.db.executeAsSuperAdmin(async (client) => {
+      return client.query(
+        `SELECT t.id, t.name, t.slug, t.cin, t.gstin, t.contact_email, t.status, t.created_at,
+                COUNT(DISTINCT tm.user_id) as member_count,
+                sp.name as plan_name,
+                ts.status as subscription_status
+         FROM tenants t
+         LEFT JOIN tenant_memberships tm ON t.id = tm.tenant_id
+         LEFT JOIN tenant_subscriptions ts ON t.id = ts.tenant_id
+         LEFT JOIN subscription_plans sp ON ts.plan_id = sp.id
+         GROUP BY t.id, sp.name, ts.status
+         ORDER BY t.created_at DESC`
+      );
+    });
     return res.rows;
   }
 }

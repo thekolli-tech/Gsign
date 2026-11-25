@@ -207,4 +207,38 @@ export const api = {
     }
     return data;
   },
+
+  // 5. Live Workspace & Platform Data
+  async getCurrentTenant() {
+    const res = await fetch(`${API_BASE}/tenants/current`, { credentials: 'include' });
+    if (!res.ok) return null;
+    return parseJsonSafe(res);
+  },
+
+  async getAllTenants() {
+    const res = await fetch(`${API_BASE}/tenants`, { credentials: 'include' });
+    if (!res.ok) return [];
+    const data = await parseJsonSafe(res);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async getUsers() {
+    const res = await fetch(`${API_BASE}/users`, { credentials: 'include' });
+    if (!res.ok) return [];
+    const data = await parseJsonSafe(res);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async getCurrentSubscription() {
+    const res = await fetch(`${API_BASE}/subscriptions/current`, { credentials: 'include' });
+    if (!res.ok) return null;
+    return parseJsonSafe(res);
+  },
+
+  async getInvoices() {
+    const res = await fetch(`${API_BASE}/payments/invoices`, { credentials: 'include' });
+    if (!res.ok) return [];
+    const data = await parseJsonSafe(res);
+    return Array.isArray(data) ? data : [];
+  },
 };

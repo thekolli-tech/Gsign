@@ -26,7 +26,16 @@ import { RecipientPortalModal } from './components/modals/RecipientPortalModal';
 import { NewAgreementModal } from './components/modals/NewAgreementModal';
 
 const AppContent: React.FC = () => {
-  const { activeView } = useApp();
+  const { activeView, authLoading, currentRole } = useApp();
+  const isRootAdmin = currentRole === 'platform_owner' || currentRole === 'super_admin';
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-300 text-xs font-medium">
+        Loading GSIGN workspace...
+      </div>
+    );
+  }
 
   const renderActiveView = () => {
     switch (activeView) {
@@ -41,8 +50,9 @@ const AppContent: React.FC = () => {
       case 'documents_receipts':
         return <DocumentsReceiptsView />;
       case 'reports':
-      case 'superadmin_analytics':
         return <ReportsAnalyticsView />;
+      case 'superadmin_analytics':
+        return isRootAdmin ? <ReportsAnalyticsView /> : <DashboardView />;
       case 'team_roles':
         return <TeamRolesView />;
       case 'branding_domain':
@@ -50,9 +60,9 @@ const AppContent: React.FC = () => {
       case 'subscription':
         return <SubscriptionView />;
       case 'superadmin_tenants':
-        return <SuperAdminTenantsView />;
+        return isRootAdmin ? <SuperAdminTenantsView /> : <DashboardView />;
       case 'superadmin_pricing':
-        return <SuperAdminPricingView />;
+        return isRootAdmin ? <SuperAdminPricingView /> : <DashboardView />;
       case 'signin':
         return <SignInView />;
       case 'register_company':

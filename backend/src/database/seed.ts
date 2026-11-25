@@ -141,54 +141,66 @@ export async function runSeeds(connectionString?: string) {
       {
         name: 'Starter Plan',
         slug: 'starter',
-        description: 'For growing businesses and small legal teams',
-        monthly_price: 1499.00,
-        annual_price: 14990.00,
-        max_agreements: 50,
-        max_users: 3,
+        description: '25 documents/month; 2 users; standard templates',
+        monthly_price: 499.00,
+        annual_price: 4990.00,
+        max_agreements: 25,
+        max_users: 2,
         features: JSON.stringify([
-          '50 agreements per month',
-          'Up to 3 team members',
-          'Standard document templates',
-          'Cryptographic SHA-256 audit trails',
-          'Email verification workflow',
+          '25 documents/month',
+          '2 users',
+          'Standard templates',
+          'Email OTP verification & audit trail',
         ]),
       },
       {
-        name: 'Growth Plan',
-        slug: 'growth',
-        description: 'For scaling companies requiring high-volume agreements & custom branding',
-        monthly_price: 3999.00,
-        annual_price: 39990.00,
-        max_agreements: 250,
-        max_users: 10,
+        name: 'Business Plan',
+        slug: 'business',
+        description: '100 documents/month; 5 users; custom branding and templates',
+        monthly_price: 1499.00,
+        annual_price: 14990.00,
+        max_agreements: 100,
+        max_users: 5,
         features: JSON.stringify([
-          '250 agreements per month',
-          'Up to 10 team members',
-          'Custom branding & logos',
-          'SMS OTP recipient authentication',
-          'Automated payment acknowledgement receipts',
-          'Priority enterprise email support',
+          '100 documents/month',
+          '5 users',
+          'Custom branding and templates',
+          'Email OTP verification & audit trail',
+        ]),
+      },
+      {
+        name: 'Professional Plan',
+        slug: 'professional',
+        description: '300 documents/month; 15 users; advanced workflows and reports',
+        monthly_price: 2999.00,
+        annual_price: 29990.00,
+        max_agreements: 300,
+        max_users: 15,
+        features: JSON.stringify([
+          '300 documents/month',
+          '15 users',
+          'Advanced workflows and reports',
+          'Email OTP verification & audit trail',
         ]),
       },
       {
         name: 'Enterprise Plan',
         slug: 'enterprise',
-        description: 'Full-scale agreement management with unlimited capacity and custom integrations',
-        monthly_price: 9999.00,
-        annual_price: 99990.00,
+        description: 'Higher volume, custom domain, advanced branding, integrations and support',
+        monthly_price: 0.00,
+        annual_price: 0.00,
         max_agreements: -1,
         max_users: -1,
         features: JSON.stringify([
-          'Unlimited agreements',
+          'Custom document volume',
           'Unlimited team members',
-          'Dedicated account manager',
-          'Custom domain & SSO integration',
-          'Full REST API & webhook access',
-          '99.9% uptime SLA guarantee',
+          'Custom domain & advanced branding',
+          'Dedicated integrations and priority support',
         ]),
       },
     ];
+
+    await client.query(`UPDATE subscription_plans SET is_active = false WHERE slug = 'growth'`);
 
     const planMap = new Map<string, string>();
     for (const p of plans) {
@@ -288,7 +300,7 @@ export async function runSeeds(connectionString?: string) {
 
       // 8. Development Only: Seed Demo Tenant Subscriptions
       const enterprisePlanId = planMap.get('enterprise')!;
-      const growthPlanId = planMap.get('growth')!;
+      const businessPlanId = planMap.get('business')!;
 
       await client.query(
         `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
@@ -301,7 +313,7 @@ export async function runSeeds(connectionString?: string) {
         `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
          VALUES ($1, $2, 'monthly', 'ACTIVE', NOW(), NOW() + INTERVAL '1 month')
          ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
-        [tenant2Id, growthPlanId]
+        [tenant2Id, businessPlanId]
       );
     } else {
       console.log('Production mode: skipped demo Super Admin, demo tenants, demo users, and demo subscriptions.');

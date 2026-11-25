@@ -276,7 +276,7 @@ export const RecipientPortalModal: React.FC = () => {
                     Verify it is you
                   </h2>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    We sent a 6-digit code to <strong className="text-slate-800 dark:text-slate-200">+91 ••••• 4821</strong>.
+                    We sent a 6-digit email code to <strong className="text-slate-800 dark:text-slate-200">{agreement.recipientEmail}</strong>.
                   </p>
                 </div>
 

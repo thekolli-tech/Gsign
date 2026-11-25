@@ -4,7 +4,7 @@ import { api } from '../../services/api';
 import gsignLogo from '../../assets/gsign_logo.png';
 
 export const SignInView: React.FC = () => {
-  const { branding, setActiveView, setCurrentRole, addToast } = useApp();
+  const { branding, setActiveView, setCurrentRole, loadLiveWorkspaceData, addToast } = useApp();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -114,13 +114,14 @@ export const SignInView: React.FC = () => {
     }
   };
 
-  const routeUserByRole = (session: any) => {
+  const routeUserByRole = async (session: any) => {
+    await loadLiveWorkspaceData(session);
     if (session.isPlatformOwner || session.role === 'PLATFORM_OWNER') {
       setCurrentRole('platform_owner');
       setActiveView('superadmin_tenants');
       addToast(
-        'Platform Owner Session',
-        `Welcome, ${session.fullName}. Platform Administration unrestricted access active.`,
+        'Genemax IT Solution — Platform Owner',
+        `Welcome, ${session.fullName}. Super Admin platform administration active.`,
         'success'
       );
     } else if (session.isSuperAdmin || session.role === 'Super Admin') {
