@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../services/api';
 import { Tenant } from '../../types';
@@ -10,8 +10,12 @@ export const SuperAdminTenantsView: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [company, setCompany] = useState('');
   const [plan, setPlan] = useState<Tenant['plan']>('Business');
+  const [durationMonths, setDurationMonths] = useState(1);
   const [domain, setDomain] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [showAdminPassword, setShowAdminPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
 
   const handleRemoveTenant = async (tenant: Tenant) => {
@@ -53,26 +57,47 @@ export const SuperAdminTenantsView: React.FC = () => {
     }
   };
 
-  const handleAddTenant = (e: React.FormEvent) => {
+  const handleAddTenant = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!company) return;
+    if (!company || !adminEmail || adminPassword.length < 8) {
+      addToast('Validation Error', 'Company name, admin email, and password (min 8 chars) are required.', 'warning');
+      return;
+    }
 
-    const newTenant: Tenant = {
-      id: `ten-${Date.now()}`,
-      company,
-      plan,
-      status: 'Active',
-      docsThisMonth: 0,
-      domain: domain || '—',
-      adminEmail: adminEmail || `admin@${company.toLowerCase().replace(/\s+/g, '')}.com`
-    };
+    setSubmitting(true);
+    try {
+      const created = await api.createTenant({
+        company_name: company.trim(),
+        admin_email: adminEmail.trim(),
+        admin_password: adminPassword,
+        plan_slug: plan.toLowerCase(),
+        duration_months: durationMonths,
+        domain: domain.trim() || undefined,
+      });
 
-    setTenants(prev => [...prev, newTenant]);
-    setCompany('');
-    setDomain('');
-    setAdminEmail('');
-    setModalOpen(false);
-    addToast('Tenant Provisioned', `Company account created for ${company}`, 'success');
+      const newTenant: Tenant = {
+        id: created.id,
+        company: created.name,
+        plan,
+        status: 'Active',
+        docsThisMonth: 0,
+        domain: created.slug || domain || '—',
+        adminEmail: created.admin_email || adminEmail,
+      };
+
+      setTenants(prev => [newTenant, ...prev]);
+      setCompany('');
+      setDomain('');
+      setAdminEmail('');
+      setAdminPassword('');
+      setDurationMonths(1);
+      setModalOpen(false);
+      addToast('Tenant Provisioned', `Company workspace created for ${created.name}`, 'success');
+    } catch (err: any) {
+      addToast('Provisioning Failed', err.message || 'Could not create tenant', 'error');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -178,33 +203,76 @@ export const SuperAdminTenantsView: React.FC = () => {
                 />
               </div>
 
-              <div>
-                <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
-                  Subscription Tier
-                </label>
-                <select
-                  value={plan}
-                  onChange={e => setPlan(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none focus:border-brand-600"
-                >
-                  <option value="Starter">Starter (25 docs/mo)</option>
-                  <option value="Business">Business (100 docs/mo)</option>
-                  <option value="Professional">Professional (300 docs/mo)</option>
-                  <option value="Enterprise">Enterprise (Custom)</option>
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                    Subscription Tier
+                  </label>
+                  <select
+                    value={plan}
+                    onChange={e => setPlan(e.target.value as any)}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none focus:border-brand-600"
+                  >
+                    <option value="Starter">Starter (25 docs/mo)</option>
+                    <option value="Business">Business (100 docs/mo)</option>
+                    <option value="Professional">Professional (300 docs/mo)</option>
+                    <option value="Enterprise">Enterprise (Custom)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                    Access Duration
+                  </label>
+                  <select
+                    value={durationMonths}
+                    onChange={e => setDurationMonths(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none focus:border-brand-600"
+                  >
+                    <option value={1}>1 Month</option>
+                    <option value={3}>3 Months</option>
+                    <option value={6}>6 Months</option>
+                    <option value={12}>1 Year</option>
+                  </select>
+                </div>
               </div>
 
               <div>
                 <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
-                  Admin Email
+                  Admin Email *
                 </label>
                 <input
                   type="email"
+                  required
                   placeholder="admin@apexlogistics.in"
                   value={adminEmail}
                   onChange={e => setAdminEmail(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none focus:border-brand-600"
                 />
+              </div>
+
+              <div>
+                <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                  Admin Password (min 8 chars) *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showAdminPassword ? 'text' : 'password'}
+                    required
+                    minLength={8}
+                    placeholder="Choose initial password"
+                    value={adminPassword}
+                    onChange={e => setAdminPassword(e.target.value)}
+                    className="w-full px-3 py-2 pr-10 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none focus:border-brand-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAdminPassword(prev => !prev)}
+                    aria-label={showAdminPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  >
+                    {showAdminPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
               </div>
 
               <div>
@@ -230,9 +298,10 @@ export const SuperAdminTenantsView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg text-white bg-brand-600 hover:bg-brand-700 font-medium shadow-subtle"
+                  disabled={submitting}
+                  className="px-4 py-1.5 rounded-lg text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50 font-medium shadow-subtle"
                 >
-                  Save Tenant
+                  {submitting ? 'Provisioning...' : 'Save Tenant'}
                 </button>
               </div>
             </form>

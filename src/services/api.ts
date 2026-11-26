@@ -602,6 +602,25 @@ export const api = {
     return `${API_BASE}/documents/${encodeURIComponent(documentId)}/download${qs}`;
   },
 
+  async createTenant(payload: {
+    company_name: string;
+    admin_email: string;
+    admin_password: string;
+    plan_slug: string;
+    duration_months: number;
+    domain?: string;
+  }) {
+    const res = await fetch(`${API_BASE}/tenants`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to provision tenant.');
+    return data;
+  },
+
   async deleteTenant(tenantId: string) {
     const res = await fetch(`${API_BASE}/tenants/${encodeURIComponent(tenantId)}`, {
       method: 'DELETE',
