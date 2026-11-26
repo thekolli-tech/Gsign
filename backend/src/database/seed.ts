@@ -220,6 +220,68 @@ export async function runSeeds(connectionString?: string) {
     }
     console.log('Seeded 3 paid subscription plans (Starter, Growth, Enterprise).');
 
+    // 3.5 Provision Default Genemax Tenant & Company Admin
+    const genemaxEmail =
+      process.env.GENEMAX_TENANT_ADMIN_EMAIL || 'genemaxit@gmail.com';
+    const genemaxPassword =
+      process.env.GENEMAX_TENANT_ADMIN_PASSWORD || 'Gmax@2026';
+
+    const genemaxTenantRes = await client.query(
+      `INSERT INTO tenants (name, slug, cin, gstin, contact_email, contact_phone, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'Active')
+       ON CONFLICT (slug) DO UPDATE SET
+         name = EXCLUDED.name,
+         contact_email = EXCLUDED.contact_email,
+         status = 'Active',
+         updated_at = NOW()
+       RETURNING id;`,
+      [
+        'Genemax IT Solution',
+        'genemax',
+        'U72900KA2020PTC135001',
+        '29AABCG1234F1Z5',
+        genemaxEmail,
+        '+91 99000 00001',
+      ],
+    );
+    const genemaxTenantId = genemaxTenantRes.rows[0].id;
+
+    const genemaxPasswordHash = await argon2.hash(genemaxPassword);
+    const genemaxUserRes = await client.query(
+      `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
+       VALUES ($1, $2, 'Genemax IT Admin', '+91 99000 00001', false, false, false, true, NOW())
+       ON CONFLICT (email) DO UPDATE SET
+         password_hash = EXCLUDED.password_hash,
+         is_active = true,
+         email_verified_at = COALESCE(users.email_verified_at, NOW())
+       RETURNING id;`,
+      [genemaxEmail, genemaxPasswordHash],
+    );
+    const genemaxUserId = genemaxUserRes.rows[0].id;
+
+    const companyAdminRoleRes = await client.query(
+      `SELECT id FROM roles WHERE name = 'Company Admin' LIMIT 1;`,
+    );
+    if (companyAdminRoleRes.rows[0]) {
+      await client.query(
+        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+         VALUES ($1, $2, $3, 'Executive', 'Active')
+         ON CONFLICT (tenant_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id, status = 'Active';`,
+        [genemaxTenantId, genemaxUserId, companyAdminRoleRes.rows[0].id],
+      );
+    }
+
+    const defaultEnterprisePlanId = planMap.get('enterprise');
+    if (defaultEnterprisePlanId) {
+      await client.query(
+        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
+         VALUES ($1, $2, 'annual', 'ACTIVE', NOW(), NOW() + INTERVAL '1 year')
+         ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE', plan_id = EXCLUDED.plan_id;`,
+        [genemaxTenantId, defaultEnterprisePlanId],
+      );
+    }
+    console.log('Seeded Default Genemax Tenant & Admin:', genemaxEmail);
+
     let superAdminId: string | null = null;
     let tenant1Id: string | null = null;
     let tenant2Id: string | null = null;
