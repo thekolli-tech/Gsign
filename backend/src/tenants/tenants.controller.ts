@@ -341,19 +341,27 @@ export class TenantsController {
         [id],
       );
 
-      // 5. Revoke active signing requests & pending recipients
-      await client.query(
-        `UPDATE signing_requests
-         SET status = 'REVOKED', revoked_at = COALESCE(revoked_at, NOW()), updated_at = NOW()
-         WHERE tenant_id = $1::uuid AND status = 'ACTIVE'`,
-        [id],
+      // 5. Revoke active signing requests & pending recipients (if signing tables exist)
+      const sigTablesRes = await client.query(
+        `SELECT to_regclass('public.signing_requests') IS NOT NULL AS has_requests,
+                to_regclass('public.signing_recipients') IS NOT NULL AS has_recipients`,
       );
-      await client.query(
-        `UPDATE signing_recipients
-         SET status = 'REVOKED', revoked_at = COALESCE(revoked_at, NOW()), updated_at = NOW()
-         WHERE tenant_id = $1::uuid AND status IN ('PENDING', 'OTP_VERIFIED')`,
-        [id],
-      );
+      if (sigTablesRes.rows[0]?.has_requests) {
+        await client.query(
+          `UPDATE signing_requests
+           SET status = 'REVOKED', revoked_at = COALESCE(revoked_at, NOW()), updated_at = NOW()
+           WHERE tenant_id = $1::uuid AND status = 'ACTIVE'`,
+          [id],
+        );
+      }
+      if (sigTablesRes.rows[0]?.has_recipients) {
+        await client.query(
+          `UPDATE signing_recipients
+           SET status = 'REVOKED', revoked_at = COALESCE(revoked_at, NOW()), updated_at = NOW()
+           WHERE tenant_id = $1::uuid AND status IN ('PENDING', 'OTP_VERIFIED')`,
+          [id],
+        );
+      }
 
       // 6. Revoke all active sessions in PostgreSQL
       const sessRes = await client.query(

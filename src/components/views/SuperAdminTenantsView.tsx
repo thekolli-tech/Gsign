@@ -17,6 +17,7 @@ export const SuperAdminTenantsView: React.FC = () => {
   const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [confirmArchiveTenant, setConfirmArchiveTenant] = useState<Tenant | null>(null);
   const [viewTab, setViewTab] = useState<'active' | 'archived'>('active');
   const [archivedTenants, setArchivedTenants] = useState<any[]>([]);
   const [loadingArchived, setLoadingArchived] = useState(false);
@@ -33,14 +34,18 @@ export const SuperAdminTenantsView: React.FC = () => {
     }
   };
 
-  const handleRemoveTenant = async (tenant: Tenant) => {
-    if (!window.confirm(`Archive tenant "${tenant.company}"? Active users will be logged out immediately while all historical agreements, documents, and audit logs are preserved.`)) {
-      return;
-    }
+  const handleRemoveTenant = (tenant: Tenant) => {
+    setConfirmArchiveTenant(tenant);
+  };
+
+  const confirmAndArchiveTenant = async () => {
+    if (!confirmArchiveTenant) return;
+    const tenant = confirmArchiveTenant;
     setRemovingId(tenant.id);
     try {
       await api.deleteTenant(tenant.id);
       setTenants(prev => prev.filter(t => t.id !== tenant.id));
+      setConfirmArchiveTenant(null);
       if (viewTab === 'archived') {
         await loadArchivedTenants();
       }
@@ -401,6 +406,46 @@ export const SuperAdminTenantsView: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Archive Tenant Confirmation Modal */}
+      {confirmArchiveTenant && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 w-full max-w-md shadow-modal space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                GSIGN — Archive Tenant
+              </h3>
+              <button
+                type="button"
+                onClick={() => setConfirmArchiveTenant(null)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+              Archive tenant <span className="font-semibold text-slate-900 dark:text-white">"{confirmArchiveTenant.company}"</span>? Active users will be logged out immediately while all historical agreements, documents, and audit logs are preserved.
+            </p>
+            <div className="pt-2 flex justify-end gap-2.5 text-xs">
+              <button
+                type="button"
+                disabled={removingId === confirmArchiveTenant.id}
+                onClick={() => setConfirmArchiveTenant(null)}
+                className="px-3.5 py-1.5 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={removingId === confirmArchiveTenant.id}
+                onClick={confirmAndArchiveTenant}
+                className="px-4 py-1.5 rounded-lg text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 font-medium shadow-subtle"
+              >
+                {removingId === confirmArchiveTenant.id ? 'Archiving...' : 'Archive Tenant'}
+              </button>
+            </div>
           </div>
         </div>
       )}
