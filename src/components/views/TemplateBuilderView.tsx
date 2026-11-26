@@ -444,87 +444,151 @@ export const TemplateBuilderView: React.FC = () => {
           </div>
         </div>
 
-        {/* Center Column: Document Canvas */}
+        {/* Center Column: Professional A4 Document Canvas */}
         <div className="lg:col-span-6">
-          <div className="p-8 sm:p-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card min-h-[500px] flex flex-col justify-between space-y-8">
-            <div className="space-y-4">
-              <div className="flex items-center justify-between text-xs text-slate-400 pb-2.5 border-b border-slate-100 dark:border-slate-800">
-                <span className="font-mono">
-                  {category} · {department}
-                </span>
-                <span className="text-[10px] uppercase font-medium text-slate-400">
-                  {isPreviewMode ? 'Preview Mode' : 'Canvas'}
-                </span>
-              </div>
-
-              {isPreviewMode ? (
-                <div className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
-                  {content
-                    .replace(/\{\{recipient_name\}\}/g, 'Meera Iyer')
-                    .replace(/\{\{fee_amount\}\}/g, '₹45,000')
-                    .replace(/\{\{period\}\}/g, '12 months')}
-                </div>
-              ) : (
-                <textarea
-                  rows={8}
-                  value={content}
-                  onChange={e => setContent(e.target.value)}
-                  className="w-full text-sm text-slate-700 dark:text-slate-300 bg-slate-50/50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-lg p-3 leading-relaxed outline-none focus:border-brand-600"
-                />
-              )}
-
-              {placedFields.filter(f => f.type !== 'Signature' && f.type !== 'Witness').length > 0 && (
-                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
-                  <h5 className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">
-                    Additional Fields
-                  </h5>
-                  <div className="grid grid-cols-2 gap-2">
-                    {placedFields
-                      .filter(f => f.type !== 'Signature' && f.type !== 'Witness')
-                      .map(field => (
-                        <div
-                          key={field.id}
-                          onClick={() => setSelectedFieldId(field.id)}
-                          className={`p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
-                            selectedFieldId === field.id
-                              ? 'border-brand-600 bg-brand-50/50 dark:bg-brand-950/30 text-brand-700 dark:text-brand-300'
-                              : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300'
-                          }`}
-                        >
-                          <div className="font-medium">{field.label}</div>
-                          <div className="text-[10px] text-slate-400">{field.type} {field.required ? '· Required' : ''}</div>
-                        </div>
-                      ))}
+          <div className="bg-slate-100/70 dark:bg-slate-950/60 p-3 sm:p-5 rounded-xl border border-slate-200/80 dark:border-slate-800">
+            <div className="w-full max-w-[794px] mx-auto aspect-[210/297] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-sm shadow-[0_12px_36px_-12px_rgba(15,23,42,0.16)] p-7 sm:p-10 flex flex-col justify-between">
+              <div className="space-y-5">
+                {/* Formal Document Letterhead */}
+                <div className="flex items-start justify-between gap-4 pb-4 border-b-2 border-slate-900/10 dark:border-slate-700">
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-brand-600 dark:text-brand-400">
+                      {category} · {department}
+                    </div>
+                    <h3 className="text-lg font-bold tracking-tight text-slate-900 dark:text-white">
+                      {name || 'Untitled Document'}
+                    </h3>
+                  </div>
+                  <div className="text-right space-y-0.5 shrink-0">
+                    <div className="text-[10px] font-mono uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      A4 · {isPreviewMode ? 'Preview' : 'Template'}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400">
+                      v{activeTemplate?.currentVersion || 1} · {activeTemplate?.status || 'Draft'}
+                    </div>
                   </div>
                 </div>
-              )}
-            </div>
 
-            <div className="grid grid-cols-2 gap-4 pt-6">
-              <div
-                onClick={() => setSelectedFieldId('field-sig')}
-                className={`p-5 rounded-lg border-2 border-dashed flex flex-col items-center justify-center text-center cursor-pointer transition-colors ${
-                  selectedFieldId === 'field-sig'
-                    ? 'border-brand-600 bg-brand-50/30 dark:bg-brand-950/20'
-                    : 'border-brand-500/70 dark:border-brand-500/50'
-                }`}
-              >
-                <span className="text-xs font-semibold text-brand-600 dark:text-brand-400">
-                  Signature · Recipient
-                </span>
+                {/* Metadata Summary Strip */}
+                <div className="grid grid-cols-3 gap-3 p-3 rounded-md bg-slate-50 dark:bg-slate-950/50 border border-slate-200/70 dark:border-slate-800 text-[11px]">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-slate-400">Recipient</div>
+                    <div className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                      {isPreviewMode ? 'Meera Iyer' : '{{recipient_name}}'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-slate-400">
+                      {category.toLowerCase().includes('offer') || category.toLowerCase().includes('employment')
+                        ? 'Monthly Salary'
+                        : 'Fee / Retainer'}
+                    </div>
+                    <div className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                      {isPreviewMode ? '₹45,000' : '{{fee_amount}}'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-slate-400">Term / Period</div>
+                    <div className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                      {isPreviewMode ? '12 months' : '{{period}}'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Document Body */}
+                <div className="space-y-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Terms & Clauses
+                  </div>
+                  {isPreviewMode ? (
+                    <div className="text-[13px] text-slate-700 dark:text-slate-300 leading-7 whitespace-pre-wrap font-serif">
+                      {content
+                        .replace(/\{\{recipient_name\}\}/g, 'Meera Iyer')
+                        .replace(/\{\{fee_amount\}\}/g, '₹45,000')
+                        .replace(/\{\{period\}\}/g, '12 months')}
+                    </div>
+                  ) : (
+                    <textarea
+                      rows={8}
+                      value={content}
+                      onChange={e => setContent(e.target.value)}
+                      className="w-full text-[13px] text-slate-700 dark:text-slate-300 bg-slate-50/50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-md p-3.5 leading-7 outline-none focus:border-brand-600"
+                    />
+                  )}
+                </div>
+
+                {/* Schedule / Additional Fields */}
+                {placedFields.filter(f => f.type !== 'Signature' && f.type !== 'Witness').length > 0 && (
+                  <div className="pt-4 border-t border-slate-200/80 dark:border-slate-800 space-y-2.5">
+                    <h5 className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                      Schedule A · Additional Fields
+                    </h5>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {placedFields
+                        .filter(f => f.type !== 'Signature' && f.type !== 'Witness')
+                        .map(field => (
+                          <div
+                            key={field.id}
+                            onClick={() => setSelectedFieldId(field.id)}
+                            className={`p-2.5 rounded-md border text-xs cursor-pointer transition-colors ${
+                              selectedFieldId === field.id
+                                ? 'border-brand-600 bg-brand-50/50 dark:bg-brand-950/30 text-brand-700 dark:text-brand-300'
+                                : 'border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900 text-slate-700 dark:text-slate-300'
+                            }`}
+                          >
+                            <div className="font-medium">{field.label}</div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">
+                              {field.type}{field.required ? ' · Required' : ''}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div
-                onClick={() => setSelectedFieldId('field-wit')}
-                className={`p-5 rounded-lg border-2 border-dashed flex flex-col items-center justify-center text-center cursor-pointer transition-colors ${
-                  selectedFieldId === 'field-wit'
-                    ? 'border-brand-600 bg-brand-50/30 dark:bg-brand-950/20'
-                    : 'border-slate-300 dark:border-slate-700'
-                }`}
-              >
-                <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
-                  Witness
-                </span>
+              {/* Formal Execution & Signature Block */}
+              <div className="pt-6 border-t border-slate-200 dark:border-slate-800 space-y-4">
+                <p className="text-[11px] italic text-slate-500 dark:text-slate-400">
+                  IN WITNESS WHEREOF, the parties hereto have executed this {category.toLowerCase()} electronically.
+                </p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div
+                    onClick={() => setSelectedFieldId('field-sig')}
+                    className={`p-4 rounded-md border border-dashed flex flex-col justify-between min-h-[76px] cursor-pointer transition-colors ${
+                      selectedFieldId === 'field-sig'
+                        ? 'border-brand-600 bg-brand-50/30 dark:bg-brand-950/20'
+                        : 'border-brand-500/60 dark:border-brand-500/40'
+                    }`}
+                  >
+                    <span className="text-[11px] font-semibold text-brand-600 dark:text-brand-400">
+                      Signature · Recipient
+                    </span>
+                    <div className="pt-4 border-b border-slate-300 dark:border-slate-700 text-[10px] text-slate-400">
+                      Authorized Signatory & Date
+                    </div>
+                  </div>
+
+                  <div
+                    onClick={() => setSelectedFieldId('field-wit')}
+                    className={`p-4 rounded-md border border-dashed flex flex-col justify-between min-h-[76px] cursor-pointer transition-colors ${
+                      selectedFieldId === 'field-wit'
+                        ? 'border-brand-600 bg-brand-50/30 dark:bg-brand-950/20'
+                        : 'border-slate-300 dark:border-slate-700'
+                    }`}
+                  >
+                    <span className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                      Witness
+                    </span>
+                    <div className="pt-4 border-b border-slate-300 dark:border-slate-700 text-[10px] text-slate-400">
+                      Witness Name & Date
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 pt-1">
+                  <span>GSIGN · A4 Standard (210 × 297 mm)</span>
+                  <span>Page 1 of 1</span>
+                </div>
               </div>
             </div>
           </div>
