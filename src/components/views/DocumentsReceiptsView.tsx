@@ -20,9 +20,11 @@ export const DocumentsReceiptsView: React.FC = () => {
   const [certificates, setCertificates] = useState<any[]>([]);
   const [selectedDocLogs, setSelectedDocLogs] = useState<{ title: string; logs: any[] } | null>(null);
   const [loadingDocs, setLoadingDocs] = useState(false);
+  const [docsError, setDocsError] = useState<string | null>(null);
 
   const loadDocumentsAndCertificates = async () => {
     setLoadingDocs(true);
+    setDocsError(null);
     try {
       const [docsRes, certsRes] = await Promise.all([
         api.getDocuments(),
@@ -30,6 +32,10 @@ export const DocumentsReceiptsView: React.FC = () => {
       ]);
       setDocuments(docsRes);
       setCertificates(certsRes);
+    } catch (err: any) {
+      const msg = err.message || 'Could not load documents and certificates.';
+      setDocsError(msg);
+      addToast('Load Failed', msg, 'error');
     } finally {
       setLoadingDocs(false);
     }
@@ -69,8 +75,21 @@ export const DocumentsReceiptsView: React.FC = () => {
   };
 
   const handleViewAccessLogs = async (doc: any) => {
-    const logs = await api.getDocumentAuditLogs(doc.id);
-    setSelectedDocLogs({ title: doc.title, logs });
+    try {
+      const logs = await api.getDocumentAuditLogs(doc.id);
+      setSelectedDocLogs({ title: doc.title, logs });
+    } catch (err: any) {
+      addToast('Audit Log Error', err.message || 'Could not fetch access logs', 'error');
+    }
+  };
+
+  const handleBlobDownload = async (documentId: string, versionId?: string, fileName?: string) => {
+    try {
+      await api.downloadDocumentBlob(documentId, versionId, fileName);
+      addToast('Download Started', `${fileName || 'Document'} downloaded securely.`, 'success');
+    } catch (err: any) {
+      addToast('Download Failed', err.message || 'Could not download document', 'error');
+    }
   };
 
   const [selectedReceiptId, setSelectedReceiptId] = useState<string>('RCT-0091');
@@ -152,6 +171,18 @@ export const DocumentsReceiptsView: React.FC = () => {
 
       {activeTab === 'documents' && (
         <div className="space-y-6">
+          {docsError && (
+            <div className="p-3.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between">
+              <span>{docsError}</span>
+              <button
+                type="button"
+                onClick={loadDocumentsAndCertificates}
+                className="font-semibold underline hover:no-underline"
+              >
+                Retry
+              </button>
+            </div>
+          )}
           {/* Completion Certificates / Signing Receipts */}
           <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
@@ -189,13 +220,14 @@ export const DocumentsReceiptsView: React.FC = () => {
                         <td className="py-3.5 px-6 text-slate-600 dark:text-slate-400">{c.recipient_name}</td>
                         <td className="py-3.5 px-6 font-mono text-[11px] text-slate-500">{c.final_pdf_sha256.slice(0, 16)}...</td>
                         <td className="py-3.5 px-6">
-                          <a
-                            href={api.getDocumentDownloadUrl(c.document_id, c.document_version_id)}
+                          <button
+                            type="button"
+                            onClick={() => handleBlobDownload(c.document_id, c.document_version_id, c.file_name)}
                             className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-400 hover:underline font-medium"
                           >
                             <Download size={12} />
                             <span>Download Certificate</span>
-                          </a>
+                          </button>
                         </td>
                       </tr>
                     ))
@@ -264,13 +296,14 @@ export const DocumentsReceiptsView: React.FC = () => {
                                   <History size={12} />
                                   <span>Logs</span>
                                 </button>
-                                <a
-                                  href={api.getDocumentDownloadUrl(doc.id, latest.id)}
+                                <button
+                                  type="button"
+                                  onClick={() => handleBlobDownload(doc.id, latest.id, latest.file_name)}
                                   className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-400 hover:underline font-medium"
                                 >
                                   <Download size={12} />
                                   <span>Download</span>
-                                </a>
+                                </button>
                               </div>
                             )}
                           </td>

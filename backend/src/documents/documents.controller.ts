@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -31,6 +32,13 @@ import { DocumentsService } from './documents.service';
 export class DocumentsController {
   constructor(private readonly documentsService: DocumentsService) {}
 
+  private requireTenantId(tenantId: string | null): string {
+    if (!tenantId) {
+      throw new ForbiddenException('Tenant workspace context is required.');
+    }
+    return tenantId;
+  }
+
   @Post('upload')
   @Permissions('agreement:create')
   @UseInterceptors(
@@ -39,14 +47,14 @@ export class DocumentsController {
     }),
   )
   async upload(
-    @CurrentTenant() tenant: { id: string },
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: { id: string; email?: string; role?: string },
     @UploadedFile() file: Express.Multer.File,
     @Body() dto: UploadDocumentDto,
     @Req() req: Request,
   ) {
     return this.documentsService.uploadOriginalDocument(
-      tenant.id,
+      this.requireTenantId(tenantId),
       user,
       file,
       dto,
@@ -57,16 +65,16 @@ export class DocumentsController {
 
   @Post('agreements/:agreementId/generate-pdf')
   @HttpCode(HttpStatus.OK)
-  @Permissions('agreement:read')
+  @Permissions('agreement:update')
   async generatePdf(
-    @CurrentTenant() tenant: { id: string },
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: { id: string; email?: string; role?: string },
     @Param('agreementId') agreementId: string,
     @Body() dto: GenerateAgreementPdfDto,
     @Req() req: Request,
   ) {
     return this.documentsService.generateAgreementPdf(
-      tenant.id,
+      this.requireTenantId(tenantId),
       user,
       agreementId,
       dto?.title,
@@ -77,15 +85,15 @@ export class DocumentsController {
 
   @Post('agreements/:agreementId/finalize')
   @HttpCode(HttpStatus.OK)
-  @Permissions('agreement:read')
+  @Permissions('agreement:update')
   async finalizeSignedPackage(
-    @CurrentTenant() tenant: { id: string },
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: { id: string; email?: string; role?: string },
     @Param('agreementId') agreementId: string,
     @Req() req: Request,
   ) {
     return this.documentsService.generateFinalSignedPackage(
-      tenant.id,
+      this.requireTenantId(tenantId),
       agreementId,
       undefined,
       user,
@@ -97,32 +105,32 @@ export class DocumentsController {
   @Get()
   @Permissions('agreement:read')
   async list(
-    @CurrentTenant() tenant: { id: string },
+    @CurrentTenant() tenantId: string | null,
     @Query('agreementId') agreementId?: string,
   ) {
-    return this.documentsService.listDocuments(tenant.id, agreementId);
+    return this.documentsService.listDocuments(this.requireTenantId(tenantId), agreementId);
   }
 
   @Get('certificates')
   @Permissions('agreement:read')
   async listCertificates(
-    @CurrentTenant() tenant: { id: string },
+    @CurrentTenant() tenantId: string | null,
     @Query('agreementId') agreementId?: string,
   ) {
-    return this.documentsService.listCertificates(tenant.id, agreementId);
+    return this.documentsService.listCertificates(this.requireTenantId(tenantId), agreementId);
   }
 
   @Get(':id/verify')
   @Permissions('agreement:read')
   async verify(
-    @CurrentTenant() tenant: { id: string },
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: { id: string; email?: string },
     @Param('id') id: string,
     @Query('versionId') versionId: string | undefined,
     @Req() req: Request,
   ) {
     return this.documentsService.verifyDocumentIntegrity(
-      tenant.id,
+      this.requireTenantId(tenantId),
       user,
       id,
       versionId,
@@ -134,16 +142,16 @@ export class DocumentsController {
   @Get(':id/audit-logs')
   @Permissions('agreement:read')
   async auditLogs(
-    @CurrentTenant() tenant: { id: string },
+    @CurrentTenant() tenantId: string | null,
     @Param('id') id: string,
   ) {
-    return this.documentsService.getDocumentAccessLogs(tenant.id, id);
+    return this.documentsService.getDocumentAccessLogs(this.requireTenantId(tenantId), id);
   }
 
   @Get(':id/download')
   @Permissions('agreement:read')
   async download(
-    @CurrentTenant() tenant: { id: string },
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: { id: string; email?: string },
     @Param('id') id: string,
     @Query('versionId') versionId: string | undefined,
@@ -152,7 +160,7 @@ export class DocumentsController {
     @Res() res: Response,
   ) {
     const result = await this.documentsService.downloadDocument(
-      tenant.id,
+      this.requireTenantId(tenantId),
       user,
       id,
       versionId,

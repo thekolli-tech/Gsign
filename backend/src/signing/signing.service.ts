@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -37,6 +39,19 @@ export class SigningService {
 
   private hashValue(value: string): string {
     return crypto.createHash('sha256').update(value).digest('hex');
+  }
+
+  private async enforceRateLimit(key: string, limit: number, windowSeconds: number): Promise<void> {
+    const count = await this.redis.incr(key);
+    if (count === 1) {
+      await this.redis.expire(key, windowSeconds);
+    }
+    if (count > limit) {
+      throw new HttpException(
+        'Too many requests. Please wait before trying again.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
   }
 
   private async sendEmail(to: string, subject: string, html: string): Promise<void> {
@@ -382,7 +397,10 @@ export class SigningService {
     });
   }
 
-  async getPortalByToken(rawToken: string) {
+  async getPortalByToken(rawToken: string, ip?: string) {
+    const tokenHash = this.hashValue(rawToken || '');
+    await this.enforceRateLimit(`rate:signing:portal:ip:${ip || 'unknown'}`, 60, 60);
+    await this.enforceRateLimit(`rate:signing:portal:tok:${tokenHash}`, 30, 60);
     const ctx = await this.resolveRecipientContextByToken(rawToken);
 
     return this.db.executeWithTenantContext(ctx.tenantId, async (client) => {
@@ -447,6 +465,9 @@ export class SigningService {
   }
 
   async requestOtp(rawToken: string, ip?: string) {
+    const tokenHash = this.hashValue(rawToken || '');
+    await this.enforceRateLimit(`rate:signing:otp_req:ip:${ip || 'unknown'}`, 10, 900);
+    await this.enforceRateLimit(`rate:signing:otp_req:tok:${tokenHash}`, 10, 900);
     const ctx = await this.resolveRecipientContextByToken(rawToken);
     const cooldownKey = `signing:otp:cooldown:${ctx.recipientId}`;
 
@@ -548,6 +569,9 @@ export class SigningService {
   }
 
   async verifyOtp(rawToken: string, otp: string, ip?: string) {
+    const tokenHash = this.hashValue(rawToken || '');
+    await this.enforceRateLimit(`rate:signing:otp_ver:ip:${ip || 'unknown'}`, 30, 900);
+    await this.enforceRateLimit(`rate:signing:otp_ver:tok:${tokenHash}`, 10, 900);
     const ctx = await this.resolveRecipientContextByToken(rawToken);
     const providedHash = this.hashValue(otp.trim());
 
@@ -710,6 +734,9 @@ export class SigningService {
       throw new BadRequestException('Explicit electronic signature consent must be accepted.');
     }
 
+    const tokenHash = this.hashValue(rawToken || '');
+    await this.enforceRateLimit(`rate:signing:submit:ip:${ip || 'unknown'}`, 10, 900);
+    await this.enforceRateLimit(`rate:signing:submit:tok:${tokenHash}`, 10, 900);
     const ctx = await this.resolveRecipientContextByToken(rawToken);
 
     const result = await this.db.executeWithTenantContext(ctx.tenantId, async (client) => {
@@ -840,40 +867,58 @@ export class SigningService {
       const allCompleted = pendingCount === 0;
 
       if (allCompleted) {
-        await client.query(
-          `UPDATE signing_requests
-           SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
-           WHERE id = $1::uuid`,
-          [request.id],
-        );
+        if (this.documentsService) {
+          await client.query(
+            `UPDATE signing_requests
+             SET status = 'FINALIZING', updated_at = NOW()
+             WHERE id = $1::uuid`,
+            [request.id],
+          );
 
-        await client.query(
-          `UPDATE agreements
-           SET status = 'Completed',
-               signature_data_url = COALESCE(signature_data_url, $2::text),
-               completed_at = NOW(),
-               updated_at = NOW()
-           WHERE id = $1::uuid`,
-          [agreement.id, dto.signature_data_url],
-        );
+          await client.query(
+            `UPDATE agreements
+             SET status = 'Finalizing',
+                 signature_data_url = COALESCE(signature_data_url, $2::text),
+                 updated_at = NOW()
+             WHERE id = $1::uuid`,
+            [agreement.id, dto.signature_data_url],
+          );
+        } else {
+          await client.query(
+            `UPDATE signing_requests
+             SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
+             WHERE id = $1::uuid`,
+            [request.id],
+          );
 
-        await client.query(
-          `INSERT INTO agreement_events (tenant_id, agreement_id, title, description, event_type, ip_address, document_hash)
-           VALUES ($1::uuid, $2::uuid, 'Agreement Completed', 'All required recipients signed; agreement completed', 'signed', $3::varchar, $4::varchar)`,
-          [ctx.tenantId, agreement.id, ip || null, documentHash],
-        );
+          await client.query(
+            `UPDATE agreements
+             SET status = 'Completed',
+                 signature_data_url = COALESCE(signature_data_url, $2::text),
+                 completed_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1::uuid`,
+            [agreement.id, dto.signature_data_url],
+          );
 
-        await client.query(
-          `INSERT INTO audit_logs (actor_email, actor_role, action, target_type, target_id, tenant_id, metadata, ip_address)
-           VALUES ($1::varchar, 'System', 'AGREEMENT_COMPLETED', 'agreement', $2::varchar, $3::uuid, $4::jsonb, $5::varchar)`,
-          [
-            recipient.email,
-            agreement.id,
-            ctx.tenantId,
-            JSON.stringify({ signing_request_id: request.id }),
-            ip || null,
-          ],
-        );
+          await client.query(
+            `INSERT INTO agreement_events (tenant_id, agreement_id, title, description, event_type, ip_address, document_hash)
+             VALUES ($1::uuid, $2::uuid, 'Agreement Completed', 'All required recipients signed; agreement completed', 'signed', $3::varchar, $4::varchar)`,
+            [ctx.tenantId, agreement.id, ip || null, documentHash],
+          );
+
+          await client.query(
+            `INSERT INTO audit_logs (actor_email, actor_role, action, target_type, target_id, tenant_id, metadata, ip_address)
+             VALUES ($1::varchar, 'System', 'AGREEMENT_COMPLETED', 'agreement', $2::varchar, $3::uuid, $4::jsonb, $5::varchar)`,
+            [
+              recipient.email,
+              agreement.id,
+              ctx.tenantId,
+              JSON.stringify({ signing_request_id: request.id }),
+              ip || null,
+            ],
+          );
+        }
       } else {
         await client.query(
           `UPDATE agreements
@@ -885,41 +930,64 @@ export class SigningService {
 
       return {
         signed: true,
-        agreement_completed: allCompleted,
-        agreement_status: allCompleted ? 'Completed' : 'Partially signed',
+        agreement_completed: allCompleted && !this.documentsService,
+        agreement_status: allCompleted
+          ? this.documentsService
+            ? 'Finalizing'
+            : 'Completed'
+          : 'Partially signed',
         document_hash: documentHash,
       };
     });
 
-    if (result.agreement_completed && this.documentsService) {
-      try {
-        const finalized = await this.documentsService.generateFinalSignedPackage(
-          ctx.tenantId,
-          ctx.agreementId,
-          ctx.signingRequestId,
-          { email: 'signing-engine@gsign.in', role: 'System' },
-          ip,
-          userAgent,
-        );
-        return {
-          ...result,
-          certificate_number: finalized.certificate?.certificate_number,
-          signed_document_id:
-            'signed_document' in finalized
-              ? finalized.signed_document?.id
-              : finalized.certificate?.metadata?.signed_document_id,
-        };
-      } catch (err) {
-        this.logger.warn(
-          `Automatic signed PDF finalization failed for agreement ${ctx.agreementId}: ${(err as Error).message}`,
-        );
-      }
+    if (result.agreement_status === 'Finalizing' && this.documentsService) {
+      const finalized = await this.documentsService.generateFinalSignedPackage(
+        ctx.tenantId,
+        ctx.agreementId,
+        ctx.signingRequestId,
+        { email: 'signing-engine@gsign.in', role: 'System' },
+        ip,
+        userAgent,
+      );
+      return {
+        ...result,
+        agreement_completed: true,
+        agreement_status: 'Completed',
+        certificate_number: finalized.certificate?.certificate_number,
+        signed_document_id:
+          'signed_document' in finalized
+            ? finalized.signed_document?.id
+            : finalized.certificate?.metadata?.signed_document_id,
+      };
     }
 
     return result;
   }
 
+  async retryFinalization(
+    tenantId: string,
+    agreementId: string,
+    user: { id: string; email?: string; role?: string },
+    ip?: string,
+    userAgent?: string,
+  ) {
+    if (!this.documentsService) {
+      throw new BadRequestException('DocumentsService is not available.');
+    }
+    return this.documentsService.generateFinalSignedPackage(
+      tenantId,
+      agreementId,
+      undefined,
+      user,
+      ip,
+      userAgent,
+    );
+  }
+
   async rejectSigning(rawToken: string, dto: RejectSigningDto, ip?: string) {
+    const tokenHash = this.hashValue(rawToken || '');
+    await this.enforceRateLimit(`rate:signing:reject:ip:${ip || 'unknown'}`, 10, 900);
+    await this.enforceRateLimit(`rate:signing:reject:tok:${tokenHash}`, 10, 900);
     const ctx = await this.resolveRecipientContextByToken(rawToken);
 
     return this.db.executeWithTenantContext(ctx.tenantId, async (client) => {

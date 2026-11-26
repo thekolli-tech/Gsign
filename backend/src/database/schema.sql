@@ -548,6 +548,42 @@ CREATE TABLE IF NOT EXISTS document_access_logs (
 CREATE INDEX IF NOT EXISTS idx_document_access_logs_tenant_id ON document_access_logs(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_document_access_logs_document_id ON document_access_logs(document_id);
 
+-- 32. Recoverable Signing Finalization State
+CREATE TABLE IF NOT EXISTS signing_finalizations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agreement_id UUID NOT NULL UNIQUE REFERENCES agreements(id) ON DELETE CASCADE,
+    signing_request_id UUID REFERENCES signing_requests(id) ON DELETE SET NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING', -- PENDING, IN_PROGRESS, COMPLETED, FAILED
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    signed_document_id UUID REFERENCES documents(id) ON DELETE SET NULL,
+    certificate_id UUID REFERENCES signing_certificates(id) ON DELETE SET NULL,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_signing_finalizations_tenant_id ON signing_finalizations(tenant_id);
+
+-- 33. Storage Cleanup & Reconciliation Queue
+CREATE TABLE IF NOT EXISTS storage_cleanup_tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    storage_provider VARCHAR(32) NOT NULL,
+    storage_bucket VARCHAR(128) NOT NULL,
+    storage_key TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING', -- PENDING, CLEANED, FAILED
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_storage_cleanup_tasks_tenant_id ON storage_cleanup_tasks(tenant_id);
+
 -- =========================================================
 -- POSTGRESQL ROW-LEVEL SECURITY (RLS) POLICIES
 -- =========================================================
@@ -573,6 +609,8 @@ ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE document_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE signing_certificates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE document_access_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE signing_finalizations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE storage_cleanup_tasks ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for table owners / application roles
 ALTER TABLE tenant_memberships FORCE ROW LEVEL SECURITY;
@@ -595,6 +633,8 @@ ALTER TABLE documents FORCE ROW LEVEL SECURITY;
 ALTER TABLE document_versions FORCE ROW LEVEL SECURITY;
 ALTER TABLE signing_certificates FORCE ROW LEVEL SECURITY;
 ALTER TABLE document_access_logs FORCE ROW LEVEL SECURITY;
+ALTER TABLE signing_finalizations FORCE ROW LEVEL SECURITY;
+ALTER TABLE storage_cleanup_tasks FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if any
 DROP POLICY IF EXISTS tenant_isolation_memberships ON tenant_memberships;
@@ -617,6 +657,8 @@ DROP POLICY IF EXISTS tenant_isolation_documents ON documents;
 DROP POLICY IF EXISTS tenant_isolation_document_versions ON document_versions;
 DROP POLICY IF EXISTS tenant_isolation_signing_certificates ON signing_certificates;
 DROP POLICY IF EXISTS tenant_isolation_document_access_logs ON document_access_logs;
+DROP POLICY IF EXISTS tenant_isolation_signing_finalizations ON signing_finalizations;
+DROP POLICY IF EXISTS tenant_isolation_storage_cleanup_tasks ON storage_cleanup_tasks;
 
 -- RLS Policy on tenant_memberships:
 -- Evaluates app.is_super_admin = 'true' OR tenant_id = app.current_tenant_id
@@ -851,6 +893,30 @@ WITH CHECK (
 
 -- RLS Policy on document_access_logs:
 CREATE POLICY tenant_isolation_document_access_logs ON document_access_logs
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on signing_finalizations:
+CREATE POLICY tenant_isolation_signing_finalizations ON signing_finalizations
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on storage_cleanup_tasks:
+CREATE POLICY tenant_isolation_storage_cleanup_tasks ON storage_cleanup_tasks
 FOR ALL
 USING (
     NULLIF(current_setting('app.is_super_admin', true), '') = 'true'

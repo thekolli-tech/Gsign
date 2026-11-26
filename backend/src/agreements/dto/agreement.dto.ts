@@ -14,6 +14,8 @@ export const AGREEMENT_STATUSES = [
   'Draft',
   'Awaiting OTP',
   'Awaiting signature',
+  'Partially signed',
+  'Finalizing',
   'Completed',
   'Expired',
   'Rejected',

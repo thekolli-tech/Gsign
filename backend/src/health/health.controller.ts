@@ -1,6 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { DatabaseService } from '../database/database.service';
+import { StorageService } from '../documents/storage.service';
 import { RedisService } from '../redis/redis.service';
 import { Public } from '../common/decorators/auth.decorators';
 
@@ -9,7 +10,8 @@ import { Public } from '../common/decorators/auth.decorators';
 export class HealthController {
   constructor(
     private readonly db: DatabaseService,
-    private readonly redis: RedisService
+    private readonly redis: RedisService,
+    private readonly storage: StorageService,
   ) {}
 
   @Public()
@@ -26,7 +28,7 @@ export class HealthController {
         dbStatus = 'connected';
       }
     } catch (e) {
-      dbStatus = `error: ${e.message}`;
+      dbStatus = `error: ${(e as Error).message}`;
     }
 
     try {
@@ -35,16 +37,22 @@ export class HealthController {
         redisStatus = 'connected';
       }
     } catch (e) {
-      redisStatus = `error: ${e.message}`;
+      redisStatus = `error: ${(e as Error).message}`;
     }
 
+    const storageDiag = this.storage.getDiagnostics();
+
     return {
-      status: dbStatus === 'connected' && redisStatus === 'connected' ? 'ok' : 'degraded',
+      status:
+        dbStatus === 'connected' && redisStatus === 'connected' && storageDiag.configured
+          ? 'ok'
+          : 'degraded',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       version: '1.0.0',
       database: dbStatus,
       redis: redisStatus,
+      storage: storageDiag,
     };
   }
 }

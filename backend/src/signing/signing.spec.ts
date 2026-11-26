@@ -54,6 +54,15 @@ describe('SigningService, OTP, Sequential/Concurrent Signing & RLS Isolation', (
       `SELECT id, email, full_name FROM users WHERE email = 'priya@gsign.in' LIMIT 1`,
     );
     userA = { ...uARes.rows[0], fullName: uARes.rows[0].full_name, role: 'Company Admin' };
+
+    await redis.del([
+      'rate:signing:otp_ver:ip:127.0.0.1',
+      'rate:signing:otp_ver:ip:unknown',
+      'rate:signing:otp_req:ip:127.0.0.1',
+      'rate:signing:otp_req:ip:unknown',
+      'rate:signing:submit:ip:127.0.0.1',
+      'rate:signing:submit:ip:unknown',
+    ]);
   });
 
   afterAll(async () => {

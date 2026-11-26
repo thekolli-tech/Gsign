@@ -15,8 +15,10 @@ import {
 
 const ALLOWED_TRANSITIONS: Record<AgreementStatusValue, AgreementStatusValue[]> = {
   Draft: ['Awaiting OTP', 'Awaiting signature', 'Cancelled'],
-  'Awaiting OTP': ['Awaiting signature', 'Completed', 'Rejected', 'Expired', 'Cancelled'],
-  'Awaiting signature': ['Completed', 'Rejected', 'Expired', 'Cancelled'],
+  'Awaiting OTP': ['Awaiting signature', 'Partially signed', 'Finalizing', 'Completed', 'Rejected', 'Expired', 'Cancelled'],
+  'Awaiting signature': ['Partially signed', 'Finalizing', 'Completed', 'Rejected', 'Expired', 'Cancelled'],
+  'Partially signed': ['Finalizing', 'Completed', 'Rejected', 'Expired', 'Cancelled'],
+  Finalizing: [],
   Completed: [],
   Expired: [],
   Rejected: [],
@@ -384,7 +386,7 @@ export class AgreementsService {
       }
 
       const currentStatus = existing.status as AgreementStatusValue;
-      if (dto.status === 'Completed') {
+      if (dto.status === 'Completed' || dto.status === 'Finalizing') {
         throw new ForbiddenException(
           'Agreements can only be marked Completed through the verified Signing Module.'
         );

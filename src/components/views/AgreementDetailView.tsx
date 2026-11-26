@@ -35,14 +35,20 @@ export const AgreementDetailView: React.FC = () => {
   const [creatingSigningLink, setCreatingSigningLink] = useState(false);
   const [serverDocs, setServerDocs] = useState<any[]>([]);
   const [docBusy, setDocBusy] = useState(false);
+  const [docsError, setDocsError] = useState<string | null>(null);
 
   const agreement = agreements.find(a => a.id === selectedAgreementId) || agreements[0];
   const agreementUuid = (agreement as any)?.uuid || agreement?.id;
 
   const loadServerDocs = async () => {
     if (!agreementUuid) return;
-    const docs = await api.getDocuments(agreementUuid);
-    setServerDocs(docs);
+    setDocsError(null);
+    try {
+      const docs = await api.getDocuments(agreementUuid);
+      setServerDocs(docs);
+    } catch (err: any) {
+      setDocsError(err.message || 'Could not load server documents.');
+    }
   };
 
   useEffect(() => {
@@ -109,7 +115,53 @@ export const AgreementDetailView: React.FC = () => {
     );
   }
 
-  const handleDownloadPDF = () => {
+  const handleBlobDownload = async (docId: string, versionId?: string, fileName?: string) => {
+    setDocBusy(true);
+    try {
+      await api.downloadDocumentBlob(docId, versionId, fileName);
+      addToast('PDF Downloaded', `${fileName || agreement.id} downloaded securely.`, 'success');
+    } catch (err: any) {
+      addToast('Download Failed', err.message || 'Could not download document', 'error');
+    } finally {
+      setDocBusy(false);
+    }
+  };
+
+  const handleDownloadPDF = async () => {
+    const preferredDoc =
+      serverDocs.find((d) => d.doc_kind === 'signed_pdf') ||
+      serverDocs.find((d) => d.doc_kind === 'generated_pdf') ||
+      serverDocs[0];
+
+    if (preferredDoc?.versions?.[0]) {
+      await handleBlobDownload(
+        preferredDoc.id,
+        preferredDoc.versions[0].id,
+        preferredDoc.versions[0].file_name,
+      );
+      return;
+    }
+
+    if (agreementUuid) {
+      setDocBusy(true);
+      try {
+        const generated = await api.generateAgreementPdf(agreementUuid);
+        await loadServerDocs();
+        await api.downloadDocumentBlob(
+          generated.document.id,
+          generated.version.id,
+          generated.version.file_name,
+        );
+        addToast('PDF Downloaded', `Agreement ${agreement.id} generated and downloaded.`, 'success');
+        return;
+      } catch (err: any) {
+        addToast('PDF Error', err.message || 'Could not generate server PDF', 'error');
+      } finally {
+        setDocBusy(false);
+      }
+      return;
+    }
+
     try {
       const doc = new jsPDF();
 
@@ -535,6 +587,12 @@ export const AgreementDetailView: React.FC = () => {
               </div>
             </div>
 
+            {docsError && (
+              <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-xs text-rose-700 dark:text-rose-300">
+                {docsError}
+              </div>
+            )}
+
             {serverDocs.length === 0 ? (
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 No server-stored documents yet. Upload an original file or generate a server PDF.
@@ -571,13 +629,15 @@ export const AgreementDetailView: React.FC = () => {
                               <ShieldCheck size={11} />
                               <span>Verify</span>
                             </button>
-                            <a
-                              href={api.getDocumentDownloadUrl(doc.id, latest.id)}
+                            <button
+                              type="button"
+                              disabled={docBusy}
+                              onClick={() => handleBlobDownload(doc.id, latest.id, latest.file_name)}
                               className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-400 hover:underline font-medium"
                             >
                               <Download size={11} />
                               <span>Download</span>
-                            </a>
+                            </button>
                           </div>
                         </div>
                       )}

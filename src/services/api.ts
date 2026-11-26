@@ -524,16 +524,16 @@ export const api = {
   async getDocuments(agreementId?: string) {
     const qs = agreementId ? `?agreementId=${encodeURIComponent(agreementId)}` : '';
     const res = await fetch(`${API_BASE}/documents${qs}`, { credentials: 'include' });
-    if (!res.ok) return [];
     const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to load documents.');
     return Array.isArray(data) ? data : [];
   },
 
   async getCertificates(agreementId?: string) {
     const qs = agreementId ? `?agreementId=${encodeURIComponent(agreementId)}` : '';
     const res = await fetch(`${API_BASE}/documents/certificates${qs}`, { credentials: 'include' });
-    if (!res.ok) return [];
     const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to load completion certificates.');
     return Array.isArray(data) ? data : [];
   },
 
@@ -551,9 +551,50 @@ export const api = {
     const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(documentId)}/audit-logs`, {
       credentials: 'include',
     });
-    if (!res.ok) return [];
     const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to load document access logs.');
     return Array.isArray(data) ? data : [];
+  },
+
+  async downloadDocumentBlob(documentId: string, versionId?: string, fallbackName = 'document.pdf') {
+    const qs = versionId ? `?versionId=${encodeURIComponent(versionId)}` : '';
+    const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(documentId)}/download${qs}`, {
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      const data = await parseJsonSafe(res);
+      throw new Error(data.message || `Download failed (HTTP ${res.status}).`);
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.presigned_url) {
+        const a = document.createElement('a');
+        a.href = json.presigned_url;
+        a.download = json.file_name || fallbackName;
+        a.rel = 'noopener noreferrer';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return;
+      }
+      throw new Error(json.message || 'Unexpected JSON response during download.');
+    }
+
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const fileName = match?.[1] || fallbackName;
+
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
   },
 
   getDocumentDownloadUrl(documentId: string, versionId?: string) {

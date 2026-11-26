@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -33,20 +34,29 @@ import { SigningService } from './signing.service';
 export class SigningController {
   constructor(private readonly signingService: SigningService) {}
 
+  private requireTenantId(tenantId: string | null): string {
+    if (!tenantId) {
+      throw new ForbiddenException('Tenant workspace context is required.');
+    }
+    return tenantId;
+  }
+
   @Post('requests')
   @Permissions('agreement:update')
   async createRequest(
-    @CurrentTenant() tenant: { id: string },
-    @CurrentUser() user: { id: string; email?: string },
+    @CurrentTenant() tenantId: string | null,
+    @CurrentUser() user: { id: string; email?: string; role?: string },
     @Body() dto: CreateSigningRequestDto,
     @Req() req: Request,
   ) {
+    const resolvedTenantId = this.requireTenantId(tenantId);
     const originHeader = req.headers.origin as string | undefined;
     const hostHeader = req.headers.host as string | undefined;
     const proto = (req.headers['x-forwarded-proto'] as string) || 'https';
-    const originUrl = originHeader || (hostHeader ? `${proto}://${hostHeader}` : 'https://gsign01.vercel.app');
+    const originUrl =
+      originHeader || (hostHeader ? `${proto}://${hostHeader}` : 'https://gsign01.vercel.app');
     return this.signingService.createSigningRequest(
-      tenant.id,
+      resolvedTenantId,
       user,
       dto,
       originUrl,
@@ -57,22 +67,48 @@ export class SigningController {
   @Get('requests/agreement/:agreementId')
   @Permissions('agreement:read')
   async listByAgreement(
-    @CurrentTenant() tenant: { id: string },
+    @CurrentTenant() tenantId: string | null,
     @Param('agreementId') agreementId: string,
   ) {
-    return this.signingService.listRequestsForAgreement(tenant.id, agreementId);
+    return this.signingService.listRequestsForAgreement(
+      this.requireTenantId(tenantId),
+      agreementId,
+    );
   }
 
   @Post('requests/:requestId/revoke')
   @HttpCode(HttpStatus.OK)
   @Permissions('agreement:update')
   async revokeRequest(
-    @CurrentTenant() tenant: { id: string },
-    @CurrentUser() user: { id: string },
+    @CurrentTenant() tenantId: string | null,
+    @CurrentUser() user: { id: string; email?: string; role?: string },
     @Param('requestId') requestId: string,
     @Req() req: Request,
   ) {
-    return this.signingService.revokeSigningRequest(tenant.id, user, requestId, req.ip);
+    return this.signingService.revokeSigningRequest(
+      this.requireTenantId(tenantId),
+      user,
+      requestId,
+      req.ip,
+    );
+  }
+
+  @Post('requests/agreement/:agreementId/retry-finalization')
+  @HttpCode(HttpStatus.OK)
+  @Permissions('agreement:update')
+  async retryFinalization(
+    @CurrentTenant() tenantId: string | null,
+    @CurrentUser() user: { id: string; email?: string; role?: string },
+    @Param('agreementId') agreementId: string,
+    @Req() req: Request,
+  ) {
+    return this.signingService.retryFinalization(
+      this.requireTenantId(tenantId),
+      agreementId,
+      user,
+      req.ip,
+      req.headers['user-agent'],
+    );
   }
 
   // =========================================================
@@ -82,8 +118,8 @@ export class SigningController {
   @Public()
   @SkipSubscription()
   @Get('portal/:token')
-  async getPortal(@Param('token') token: string) {
-    return this.signingService.getPortalByToken(token);
+  async getPortal(@Param('token') token: string, @Req() req: Request) {
+    return this.signingService.getPortalByToken(token, req.ip);
   }
 
   @Public()

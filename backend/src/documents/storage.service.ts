@@ -1,5 +1,6 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -17,19 +18,37 @@ export interface StoredObjectResult {
   byteSize: number;
 }
 
+export interface StorageDiagnostics {
+  driver: 's3' | 'local_private';
+  productionMode: boolean;
+  configured: boolean;
+  bucketConfigured: boolean;
+  endpointConfigured: boolean;
+  credentialsConfigured: boolean;
+}
+
 @Injectable()
-export class StorageService {
+export class StorageService implements OnModuleInit {
   private readonly logger = new Logger(StorageService.name);
   private readonly s3Client: S3Client | null = null;
   private readonly s3Bucket: string | null = null;
   private readonly localRoot: string;
+  private readonly isProduction: boolean;
+  private readonly endpointConfigured: boolean;
+  private readonly credentialsConfigured: boolean;
 
   constructor() {
+    this.isProduction =
+      process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
+
     const bucket = process.env.S3_BUCKET?.trim();
     const accessKeyId = process.env.S3_ACCESS_KEY_ID?.trim();
     const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY?.trim();
     const endpoint = process.env.S3_ENDPOINT?.trim();
     const region = process.env.S3_REGION?.trim() || 'auto';
+
+    this.endpointConfigured = Boolean(endpoint);
+    this.credentialsConfigured = Boolean(accessKeyId && secretAccessKey);
 
     if (bucket && accessKeyId && secretAccessKey) {
       this.s3Bucket = bucket;
@@ -43,9 +62,9 @@ export class StorageService {
         },
       });
       this.logger.log(`Private S3-compatible storage initialized (bucket: ${bucket})`);
-    } else {
+    } else if (!this.isProduction) {
       this.logger.log(
-        'S3 credentials not configured; using private local filesystem vault (backend/.local_storage)',
+        'S3 credentials not configured; using private local filesystem vault (backend/.local_storage) for development/testing.',
       );
     }
 
@@ -54,8 +73,36 @@ export class StorageService {
       path.resolve(process.cwd(), '.local_storage');
   }
 
+  onModuleInit() {
+    if (this.isProduction && (!this.s3Client || !this.s3Bucket)) {
+      const msg =
+        'CRITICAL STORAGE MISCONFIGURATION: Private S3/R2 storage (S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY) is required in production. Local filesystem storage is disabled in production.';
+      this.logger.error(msg);
+      throw new Error(msg);
+    }
+  }
+
   isS3Enabled(): boolean {
     return Boolean(this.s3Client && this.s3Bucket);
+  }
+
+  getDiagnostics(): StorageDiagnostics {
+    return {
+      driver: this.isS3Enabled() ? 's3' : 'local_private',
+      productionMode: this.isProduction,
+      configured: this.isProduction ? this.isS3Enabled() : true,
+      bucketConfigured: Boolean(this.s3Bucket),
+      endpointConfigured: this.endpointConfigured,
+      credentialsConfigured: this.credentialsConfigured,
+    };
+  }
+
+  private assertWriteAllowedInCurrentEnv() {
+    if (this.isProduction && (!this.s3Client || !this.s3Bucket)) {
+      throw new Error(
+        'Production storage is not configured: S3/R2 credentials and bucket are required.',
+      );
+    }
   }
 
   private resolveSafeLocalPath(key: string): string {
@@ -76,6 +123,8 @@ export class StorageService {
     contentType: string,
     metadata?: Record<string, string>,
   ): Promise<StoredObjectResult> {
+    this.assertWriteAllowedInCurrentEnv();
+
     if (this.s3Client && this.s3Bucket) {
       await this.s3Client.send(
         new PutObjectCommand({
@@ -132,12 +181,38 @@ export class StorageService {
       return Buffer.concat(chunks);
     }
 
+    if (this.isProduction) {
+      throw new NotFoundException('Local storage objects cannot be read in production.');
+    }
+
     const filePath = this.resolveSafeLocalPath(key);
     try {
       return await fs.readFile(filePath);
     } catch {
       throw new NotFoundException('Stored document file not found in private vault.');
     }
+  }
+
+  async deletePrivateObject(provider: string, bucket: string, key: string): Promise<void> {
+    if (provider === 's3') {
+      if (!this.s3Client) {
+        throw new Error('S3 storage client is not configured for cleanup.');
+      }
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: key,
+        }),
+      );
+      return;
+    }
+
+    if (this.isProduction) {
+      throw new Error('Local storage cleanup is disabled in production.');
+    }
+
+    const filePath = this.resolveSafeLocalPath(key);
+    await fs.rm(filePath, { force: true });
   }
 
   async headPrivateObject(provider: string, bucket: string, key: string): Promise<boolean> {
@@ -149,6 +224,10 @@ export class StorageService {
       } catch {
         return false;
       }
+    }
+
+    if (this.isProduction) {
+      return false;
     }
 
     const filePath = this.resolveSafeLocalPath(key);
