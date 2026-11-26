@@ -341,6 +341,45 @@ CREATE TABLE IF NOT EXISTS agreement_events (
 CREATE INDEX IF NOT EXISTS idx_agreement_events_tenant_id ON agreement_events(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_agreement_events_agreement_id ON agreement_events(agreement_id);
 
+-- 21. Agreement Templates
+CREATE TABLE IF NOT EXISTS templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    created_by UUID NOT NULL REFERENCES users(id),
+    name VARCHAR(128) NOT NULL,
+    category VARCHAR(64) NOT NULL DEFAULT 'Offer Letter',
+    department VARCHAR(64) NOT NULL DEFAULT 'HR',
+    description TEXT NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL DEFAULT 'Draft', -- Draft, Published, Archived
+    current_version INTEGER NOT NULL DEFAULT 1,
+    published_version INTEGER,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_templates_tenant_id ON templates(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_templates_status ON templates(status);
+
+-- 22. Template Versions (Immutable history; publishing locks version)
+CREATE TABLE IF NOT EXISTS template_versions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    template_id UUID NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+    version_number INTEGER NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'Draft', -- Draft, Published, Archived
+    content TEXT NOT NULL,
+    fields_json JSONB NOT NULL DEFAULT '[]',
+    created_by UUID NOT NULL REFERENCES users(id),
+    published_by UUID REFERENCES users(id),
+    published_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_template_version UNIQUE (template_id, version_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_template_versions_tenant_id ON template_versions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_template_versions_template_id ON template_versions(template_id);
+
 -- =========================================================
 -- POSTGRESQL ROW-LEVEL SECURITY (RLS) POLICIES
 -- =========================================================
@@ -355,6 +394,8 @@ ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agreements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agreement_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE template_versions ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for table owners / application roles
 ALTER TABLE tenant_memberships FORCE ROW LEVEL SECURITY;
@@ -366,6 +407,8 @@ ALTER TABLE invoices FORCE ROW LEVEL SECURITY;
 ALTER TABLE usage_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE agreements FORCE ROW LEVEL SECURITY;
 ALTER TABLE agreement_events FORCE ROW LEVEL SECURITY;
+ALTER TABLE templates FORCE ROW LEVEL SECURITY;
+ALTER TABLE template_versions FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if any
 DROP POLICY IF EXISTS tenant_isolation_memberships ON tenant_memberships;
@@ -377,6 +420,8 @@ DROP POLICY IF EXISTS tenant_isolation_invoices ON invoices;
 DROP POLICY IF EXISTS tenant_isolation_usage ON usage_records;
 DROP POLICY IF EXISTS tenant_isolation_agreements ON agreements;
 DROP POLICY IF EXISTS tenant_isolation_agreement_events ON agreement_events;
+DROP POLICY IF EXISTS tenant_isolation_templates ON templates;
+DROP POLICY IF EXISTS tenant_isolation_template_versions ON template_versions;
 
 -- RLS Policy on tenant_memberships:
 -- Evaluates app.is_super_admin = 'true' OR tenant_id = app.current_tenant_id
@@ -479,6 +524,30 @@ WITH CHECK (
 
 -- RLS Policy on agreement_events:
 CREATE POLICY tenant_isolation_agreement_events ON agreement_events
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on templates:
+CREATE POLICY tenant_isolation_templates ON templates
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on template_versions:
+CREATE POLICY tenant_isolation_template_versions ON template_versions
 FOR ALL
 USING (
     NULLIF(current_setting('app.is_super_admin', true), '') = 'true'

@@ -107,6 +107,29 @@ export interface TemplateField {
   value?: string;
 }
 
+export interface TemplateVersionSummary {
+  id: string;
+  versionNumber: number;
+  status: 'Draft' | 'Published' | 'Archived';
+  publishedAt?: string;
+  createdAt: string;
+}
+
+export interface AgreementTemplate {
+  id: string;
+  name: string;
+  category: string;
+  department: Department | string;
+  description: string;
+  status: 'Draft' | 'Published' | 'Archived';
+  currentVersion: number;
+  publishedVersion?: number | null;
+  content: string;
+  fields: TemplateField[];
+  versionStatus: 'Draft' | 'Published' | 'Archived';
+  versions: TemplateVersionSummary[];
+}
+
 export interface BrandingSettings {
   logoText: string;
   logoUrl?: string;

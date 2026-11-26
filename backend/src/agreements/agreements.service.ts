@@ -384,6 +384,11 @@ export class AgreementsService {
       }
 
       const currentStatus = existing.status as AgreementStatusValue;
+      if (dto.status === 'Completed') {
+        throw new ForbiddenException(
+          'Agreements can only be marked Completed through the verified Signing Module.'
+        );
+      }
       const allowed = ALLOWED_TRANSITIONS[currentStatus] || [];
       if (!allowed.includes(dto.status)) {
         throw new BadRequestException(
@@ -404,11 +409,9 @@ export class AgreementsService {
       );
 
       const eventType =
-        dto.status === 'Completed'
-          ? 'signed'
-          : dto.status === 'Awaiting OTP' || dto.status === 'Awaiting signature'
-            ? 'sent'
-            : 'viewed';
+        dto.status === 'Awaiting OTP' || dto.status === 'Awaiting signature'
+          ? 'sent'
+          : 'viewed';
 
       await client.query(
         `INSERT INTO agreement_events (tenant_id, agreement_id, actor_id, title, description, event_type, ip_address, document_hash)

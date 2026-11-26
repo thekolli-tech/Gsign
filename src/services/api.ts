@@ -307,4 +307,84 @@ export const api = {
     }
     return data;
   },
+
+  // 7. Templates Management Engine
+  async getTemplates(includeArchived = false) {
+    const qs = includeArchived ? '?include_archived=true' : '';
+    const res = await fetch(`${API_BASE}/templates${qs}`, { credentials: 'include' });
+    if (!res.ok) return [];
+    const data = await parseJsonSafe(res);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async createTemplate(payload: {
+    name: string;
+    category?: string;
+    department?: string;
+    description?: string;
+    content: string;
+    fields?: any[];
+  }) {
+    const res = await fetch(`${API_BASE}/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to create template.');
+    return data;
+  },
+
+  async updateTemplate(
+    id: string,
+    payload: {
+      name?: string;
+      category?: string;
+      department?: string;
+      description?: string;
+      content?: string;
+      fields?: any[];
+    }
+  ) {
+    const res = await fetch(`${API_BASE}/templates/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to save template.');
+    return data;
+  },
+
+  async publishTemplate(id: string) {
+    const res = await fetch(`${API_BASE}/templates/${encodeURIComponent(id)}/publish`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to publish template.');
+    return data;
+  },
+
+  async duplicateTemplate(id: string) {
+    const res = await fetch(`${API_BASE}/templates/${encodeURIComponent(id)}/duplicate`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to duplicate template.');
+    return data;
+  },
+
+  async archiveTemplate(id: string) {
+    const res = await fetch(`${API_BASE}/templates/${encodeURIComponent(id)}/archive`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to archive template.');
+    return data;
+  },
 };

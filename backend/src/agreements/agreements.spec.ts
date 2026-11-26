@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigModule } from '@nestjs/config';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
 import { DatabaseService } from '../database/database.service';
 import { AgreementsService } from './agreements.service';
@@ -44,7 +44,7 @@ describe('AgreementsService & RLS Tenant Isolation', () => {
     userB = { ...uBRes.rows[0], fullName: uBRes.rows[0].full_name, role: 'Company Admin' };
   });
 
-  it('Creates a Draft agreement, edits it, transitions Draft -> Awaiting signature -> Completed, and rejects invalid transitions', async () => {
+  it('Creates a Draft agreement, edits it, transitions Draft -> Awaiting signature -> Cancelled, and blocks direct Completed transition', async () => {
     const draft = await agreementsService.createAgreement(tenantAId, userA, {
       recipient_name: 'Test Signer',
       recipient_email: 'signer@example.com',
@@ -77,16 +77,23 @@ describe('AgreementsService & RLS Tenant Isolation', () => {
       agreementsService.updateAgreement(tenantAId, userA, draft.id, { period: '48 months' })
     ).rejects.toThrow(BadRequestException);
 
-    const completed = await agreementsService.transitionStatus(tenantAId, userA, draft.id, {
-      status: 'Completed',
-      signature_data_url: 'data:image/png;base64,TEST',
+    // Direct Completed transition must be blocked until Signing Module authorizes it
+    await expect(
+      agreementsService.transitionStatus(tenantAId, userA, draft.id, {
+        status: 'Completed',
+        signature_data_url: 'data:image/png;base64,TEST',
+      })
+    ).rejects.toThrow(ForbiddenException);
+
+    const cancelled = await agreementsService.transitionStatus(tenantAId, userA, draft.id, {
+      status: 'Cancelled',
     });
-    expect(completed.status).toBe('Completed');
-    expect(completed.auditTrail.length).toBeGreaterThanOrEqual(3);
+    expect(cancelled.status).toBe('Cancelled');
+    expect(cancelled.auditTrail.length).toBeGreaterThanOrEqual(3);
 
     // Terminal state transition must fail
     await expect(
-      agreementsService.transitionStatus(tenantAId, userA, draft.id, { status: 'Cancelled' })
+      agreementsService.transitionStatus(tenantAId, userA, draft.id, { status: 'Awaiting signature' })
     ).rejects.toThrow(BadRequestException);
   });
 

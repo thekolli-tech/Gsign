@@ -7,7 +7,8 @@ import {
   PricingPlan, 
   BrandingSettings, 
   ThemeMode,
-  UserRole 
+  UserRole,
+  AgreementTemplate
 } from '../types';
 import { api } from '../services/api';
 
@@ -76,6 +77,8 @@ interface AppContextType {
   setTeamMembers: React.Dispatch<React.SetStateAction<TeamMember[]>>;
   tenants: Tenant[];
   setTenants: React.Dispatch<React.SetStateAction<Tenant[]>>;
+  templates: AgreementTemplate[];
+  setTemplates: React.Dispatch<React.SetStateAction<AgreementTemplate[]>>;
   pricingPlans: PricingPlan[];
   setPricingPlans: React.Dispatch<React.SetStateAction<PricingPlan[]>>;
   branding: BrandingSettings;
@@ -339,6 +342,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [templates, setTemplates] = useState<AgreementTemplate[]>([]);
   const [pricingPlans, setPricingPlans] = useState<PricingPlan[]>([
     {
       id: 'starter',
@@ -440,11 +444,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       setCurrentRole(session.role === 'Company Admin' ? 'company_admin' : 'company_staff');
       setTenants([]);
-      const [liveUsers, liveInvoices, liveAgreements] = await Promise.all([
+      const [liveUsers, liveInvoices, liveAgreements, liveTemplates] = await Promise.all([
         api.getUsers().catch(() => []),
         api.getInvoices().catch(() => []),
         api.getAgreements().catch(() => []),
+        api.getTemplates().catch(() => []),
       ]);
+      if (Array.isArray(liveTemplates)) {
+        setTemplates(liveTemplates);
+      }
       if (Array.isArray(liveAgreements)) {
         setAgreements(liveAgreements);
         if (liveAgreements.length > 0) {
@@ -570,18 +578,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addToast('Payment Acknowledged', `Official receipt generated with authorized sign-off.`, 'success');
   };
 
-  const completeSigning = async (agreementId: string, signatureData: string) => {
-    try {
-      const updated = await api.transitionAgreement(agreementId, {
-        status: 'Completed',
-        signature_data_url: signatureData,
-        reason: 'Recipient electronic signature & consent recorded',
-      });
-      setAgreements(prev => prev.map(ag => (ag.id === agreementId ? updated : ag)));
-      addToast('Document Executed!', `Agreement ${agreementId} has been legally signed & sealed.`, 'success');
-    } catch (err: any) {
-      addToast('Signing Error', err.message || 'Failed to complete signing.', 'error');
-    }
+  const completeSigning = async (agreementId: string, _signatureData: string) => {
+    addToast(
+      'Signing Verification Required',
+      `Agreement ${agreementId} can only be marked Completed via the verified Signing Module.`,
+      'info'
+    );
   };
 
   const createAgreement = async (
@@ -669,6 +671,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setTeamMembers,
         tenants,
         setTenants,
+        templates,
+        setTemplates,
         pricingPlans,
         setPricingPlans,
         branding,
