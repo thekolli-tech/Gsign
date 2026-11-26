@@ -16,13 +16,21 @@ export const DashboardView: React.FC = () => {
     setSigningAgreement,
   } = useApp();
 
-  // Stat counts matching the exact wireframe numbers
+  // Real-time stat counts from live workspace agreements
   const statCards = [
-    { label: 'Draft', count: 8 },
-    { label: 'Sent', count: 14 },
-    { label: 'Pending signature', count: 21 },
-    { label: 'Completed', count: 62 },
-    { label: 'Expired/Rejected', count: 5 },
+    { label: 'Draft', count: agreements.filter(a => a.status === 'Draft').length },
+    { label: 'Sent', count: agreements.filter(a => a.status !== 'Draft').length },
+    {
+      label: 'Pending signature',
+      count: agreements.filter(a =>
+        ['Awaiting OTP', 'Awaiting signature', 'Partially signed', 'Finalizing'].includes(a.status)
+      ).length,
+    },
+    { label: 'Completed', count: agreements.filter(a => a.status === 'Completed').length },
+    {
+      label: 'Expired/Rejected',
+      count: agreements.filter(a => ['Expired', 'Rejected', 'Cancelled'].includes(a.status)).length,
+    },
   ];
 
   const getStatusBadge = (status: AgreementStatus) => {

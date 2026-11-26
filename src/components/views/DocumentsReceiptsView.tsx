@@ -361,7 +361,14 @@ export const DocumentsReceiptsView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-normal">
-                  {receipts.map((r, idx) => (
+                  {receipts.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-10 px-6 text-center text-slate-400">
+                        No payment receipts recorded yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    receipts.map((r, idx) => (
                     <tr
                       key={r.id || idx}
                       onClick={() => setSelectedReceiptId(r.id)}
@@ -393,7 +400,8 @@ export const DocumentsReceiptsView: React.FC = () => {
                         )}
                       </td>
                     </tr>
-                  ))}
+                  ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -402,6 +410,11 @@ export const DocumentsReceiptsView: React.FC = () => {
 
         {/* Right Column: Receipt Voucher Card matching pages 7 & 21 ~ 5 cols */}
         <div className="lg:col-span-5">
+          {!selectedReceipt ? (
+            <div className="p-6 sm:p-7 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card text-center text-xs text-slate-400">
+              Select a payment receipt to view voucher details.
+            </div>
+          ) : (
           <div className="p-6 sm:p-7 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card space-y-5">
             {/* Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
@@ -476,6 +489,7 @@ export const DocumentsReceiptsView: React.FC = () => {
               </span>
             </div>
           </div>
+          )}
         </div>
       </div>
       )}
