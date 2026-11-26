@@ -79,7 +79,21 @@ export const api = {
       credentials: 'include',
     });
     if (!res.ok) return null;
-    return res.json();
+    const data = await parseJsonSafe(res);
+    const userId = data?.userId || data?.user?.id;
+    if (!userId) return null;
+    return {
+      sessionId: data.sessionId,
+      userId,
+      email: data.email || data.user?.email,
+      fullName: data.fullName || data.user?.fullName,
+      isSuperAdmin: Boolean(data.isSuperAdmin ?? data.user?.isSuperAdmin),
+      isPlatformOwner: Boolean(data.isPlatformOwner ?? data.user?.isPlatformOwner),
+      tenantId: data.tenantId ?? null,
+      role: data.role ?? null,
+      permissions: Array.isArray(data.permissions) ? data.permissions : [],
+      expiresAt: data.expiresAt,
+    };
   },
 
   // 2. Company Registration

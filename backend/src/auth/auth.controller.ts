@@ -120,6 +120,7 @@ export class AuthController {
         email: session.email,
         fullName: session.fullName,
         isSuperAdmin: session.isSuperAdmin,
+        isPlatformOwner: session.isPlatformOwner,
       },
       tenantId: session.tenantId,
       role: session.role,
