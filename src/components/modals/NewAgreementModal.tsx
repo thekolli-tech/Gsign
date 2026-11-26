@@ -33,7 +33,7 @@ export const NewAgreementModal: React.FC = () => {
         period,
         signMethod,
         initialStatus: asDraft ? 'Draft' : signMethod === 'otp_verified' ? 'Awaiting OTP' : 'Awaiting signature',
-        content: `This offer is made to ${recipientName} for a monthly fee of ₹${Number(feeAmount || 0).toLocaleString('en-IN')} for ${period}. The recipient agrees to the terms and clauses set out in Schedule A.`
+        content: `This offer is made to ${recipientName} for a ${templateType.toLowerCase().includes('offer') ? 'monthly salary' : 'monthly fee'} of ₹${Number(feeAmount || 0).toLocaleString('en-IN')} for ${period}. The recipient agrees to the terms and clauses set out in Schedule A.`
       });
       if (created) {
         setNewAgreementModalOpen(false);

@@ -124,7 +124,7 @@ const initialAgreements: Agreement[] = [
     createdAt: '24 Nov 2026 10:02',
     feeAmount: 45000,
     period: '12 months',
-    content: 'This offer is made to Ravi Kumar for a monthly fee of ₹45,000 for 12 months. The recipient agrees to the terms and clauses set out in Schedule A. 1. The recipient agrees to intellectual property assignments and confidentiality agreements.',
+    content: 'This offer is made to Ravi Kumar for a monthly salary of ₹45,000 for 12 months. The recipient agrees to the terms and clauses set out in Schedule A. 1. The recipient agrees to intellectual property assignments and confidentiality agreements.',
     signMethod: 'basic_drawn',
     signatureDataUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="220" height="60"><path d="M 10 40 Q 50 10, 80 35 T 140 25 T 190 30" stroke="%235B13EC" stroke-width="3" fill="none"/></svg>',
     documentHash: 'a91f3b72c4e908f0923058cd41209e7c',

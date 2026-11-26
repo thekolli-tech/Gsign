@@ -38,7 +38,7 @@ const DEFAULT_FIELDS: TemplateField[] = [
 ];
 
 const DEFAULT_CONTENT =
-  'This offer is made to {{recipient_name}} for a monthly fee of {{fee_amount}} for the period of {{period}}.\n1. The recipient agrees to the terms and clauses set out in Schedule A.';
+  'This offer is made to {{recipient_name}} for a monthly salary of {{fee_amount}} for the period of {{period}}.\n1. The recipient agrees to the terms and clauses set out in Schedule A.';
 
 export const TemplateBuilderView: React.FC = () => {
   const { templates, setTemplates, addToast } = useApp();

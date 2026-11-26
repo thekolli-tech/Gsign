@@ -453,7 +453,7 @@ export const AgreementDetailView: React.FC = () => {
               {/* Document Text matching screenshot */}
               <div className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed space-y-4">
                 <p>
-                  This offer is made to <strong className="text-slate-900 dark:text-white font-semibold">{agreement.recipientName}</strong> for a monthly fee of <strong className="text-slate-900 dark:text-white font-semibold">₹{agreement.feeAmount.toLocaleString('en-IN')}</strong> for {agreement.period}…
+                  This offer is made to <strong className="text-slate-900 dark:text-white font-semibold">{agreement.recipientName}</strong> for a {agreement.templateType.toLowerCase().includes('offer') ? 'monthly salary' : 'monthly fee'} of <strong className="text-slate-900 dark:text-white font-semibold">₹{agreement.feeAmount.toLocaleString('en-IN')}</strong> for {agreement.period}…
                 </p>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-normal">
                   The recipient agrees to the standard covenants, intellectual property assignment clauses, confidentiality protocols, and department guidelines as set out in Schedule A.
