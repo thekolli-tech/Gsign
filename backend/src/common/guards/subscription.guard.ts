@@ -80,6 +80,13 @@ export class SubscriptionGuard implements CanActivate {
             // Within grace period
             return true;
           }
+          // Mark subscription EXPIRED so status reflects reality and deny access immediately
+          await this.db.executeWithTenantContext(tenantId, async (client) => {
+            await client.query(
+              `UPDATE tenant_subscriptions SET status = 'EXPIRED', updated_at = NOW() WHERE id = $1`,
+              [sub.id],
+            );
+          });
           // Expired
           throw new ForbiddenException(
             'Paid workspace access blocked: Your company subscription has expired. Please renew your subscription.'

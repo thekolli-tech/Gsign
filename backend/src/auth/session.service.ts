@@ -276,4 +276,23 @@ export class SessionService {
       await this.redis.del(keys);
     }
   }
+
+  /**
+   * Revokes all active sessions associated with a tenant (e.g. on tenant removal/suspension).
+   */
+  async revokeTenantSessions(tenantId: string): Promise<void> {
+    const res = await this.db.executeAsSuperAdmin(async (client) => {
+      return client.query(
+        `UPDATE sessions SET revoked_at = NOW()
+         WHERE tenant_id = $1 AND revoked_at IS NULL
+         RETURNING id`,
+        [tenantId],
+      );
+    });
+
+    const keys = res.rows.map((r) => `session:${r.id}`);
+    if (keys.length > 0) {
+      await this.redis.del(keys);
+    }
+  }
 }

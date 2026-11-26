@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { api } from '../../services/api';
 import { Tenant } from '../../types';
 
 export const SuperAdminTenantsView: React.FC = () => {
@@ -11,6 +12,23 @@ export const SuperAdminTenantsView: React.FC = () => {
   const [plan, setPlan] = useState<Tenant['plan']>('Business');
   const [domain, setDomain] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
+  const [removingId, setRemovingId] = useState<string | null>(null);
+
+  const handleRemoveTenant = async (tenant: Tenant) => {
+    if (!window.confirm(`Remove tenant "${tenant.company}" and revoke all its active sessions?`)) {
+      return;
+    }
+    setRemovingId(tenant.id);
+    try {
+      await api.deleteTenant(tenant.id);
+      setTenants(prev => prev.filter(t => t.id !== tenant.id));
+      addToast('Tenant Removed', `${tenant.company} has been removed and sessions revoked.`, 'success');
+    } catch (err: any) {
+      addToast('Removal Failed', err.message || 'Could not remove tenant', 'error');
+    } finally {
+      setRemovingId(null);
+    }
+  };
 
   const getStatusBadge = (status: Tenant['status']) => {
     switch (status) {
@@ -90,6 +108,7 @@ export const SuperAdminTenantsView: React.FC = () => {
                 <th className="py-3 px-6 font-medium">Status</th>
                 <th className="py-3 px-6 font-medium">Docs this month</th>
                 <th className="py-3 px-6 font-medium">Domain</th>
+                <th className="py-3 px-6 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-normal">
@@ -112,6 +131,17 @@ export const SuperAdminTenantsView: React.FC = () => {
                   </td>
                   <td className="py-3.5 px-6 font-mono text-slate-500 dark:text-slate-400">
                     {t.domain}
+                  </td>
+                  <td className="py-3.5 px-6 text-right">
+                    <button
+                      type="button"
+                      disabled={removingId === t.id}
+                      onClick={() => handleRemoveTenant(t)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800/60 hover:bg-rose-50 dark:hover:bg-rose-950/30 disabled:opacity-50 transition-colors"
+                    >
+                      <Trash2 size={12} />
+                      <span>{removingId === t.id ? 'Removing...' : 'Remove'}</span>
+                    </button>
                   </td>
                 </tr>
               ))}

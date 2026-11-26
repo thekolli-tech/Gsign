@@ -601,4 +601,14 @@ export const api = {
     const qs = versionId ? `?versionId=${encodeURIComponent(versionId)}` : '';
     return `${API_BASE}/documents/${encodeURIComponent(documentId)}/download${qs}`;
   },
+
+  async deleteTenant(tenantId: string) {
+    const res = await fetch(`${API_BASE}/tenants/${encodeURIComponent(tenantId)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to remove tenant.');
+    return data;
+  },
 };
