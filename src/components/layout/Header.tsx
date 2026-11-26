@@ -6,12 +6,17 @@ import {
   Plus, 
   Command,
   FileCheck2,
-  LogOut
+  LogOut,
+  Menu
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../services/api';
 
-export const Header: React.FC = () => {
+interface HeaderProps {
+  onOpenMenu?: () => void;
+}
+
+export const Header: React.FC<HeaderProps> = ({ onOpenMenu }) => {
   const { 
     theme, 
     toggleTheme, 
@@ -93,21 +98,31 @@ export const Header: React.FC = () => {
   const titleInfo = getTitle();
 
   return (
-    <header className="sticky top-0 z-20 w-full h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 sm:px-8 flex items-center justify-between transition-colors duration-200">
-      {/* Title & Organization Subhead */}
-      <div>
-        <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white leading-tight">
-          {titleInfo.main}
-        </h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 font-normal">
-          {titleInfo.sub}
-        </p>
+    <header className="sticky top-0 z-20 w-full h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-2 transition-colors duration-200">
+      {/* Mobile Menu + Title & Organization Subhead */}
+      <div className="flex items-center gap-2.5 min-w-0">
+        <button
+          type="button"
+          onClick={onOpenMenu}
+          aria-label="Open navigation menu"
+          className="lg:hidden p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 flex-shrink-0"
+        >
+          <Menu size={17} />
+        </button>
+        <div className="min-w-0">
+          <h2 className="text-base sm:text-lg font-semibold tracking-tight text-slate-900 dark:text-white leading-tight truncate">
+            {titleInfo.main}
+          </h2>
+          <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 font-normal truncate">
+            {titleInfo.sub}
+          </p>
+        </div>
       </div>
 
       {/* Center Search & Actions */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
         {/* Search Input with quick matching popup */}
-        <div className="relative w-60 sm:w-72">
+        <div className="hidden md:block relative w-52 lg:w-72">
           <div className="flex items-center bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm focus-within:border-brand-600 focus-within:ring-1 focus-within:ring-brand-600 transition-colors">
             <Search size={15} className="text-slate-400 mr-2 flex-shrink-0" />
             <input
@@ -198,10 +213,10 @@ export const Header: React.FC = () => {
         <button
           type="button"
           onClick={() => setNewAgreementModalOpen(true)}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle cursor-pointer"
+          className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle cursor-pointer"
         >
           <Plus size={15} strokeWidth={2} />
-          <span>+ New agreement</span>
+          <span className="hidden sm:inline">+ New agreement</span>
         </button>
 
         {/* Sign Out Button */}

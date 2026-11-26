@@ -17,13 +17,19 @@ import {
   ShieldCheck,
   ChevronRight,
   ExternalLink,
-  LogOut
+  LogOut,
+  X
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../services/api';
 import gsignLogo from '../../assets/gsign_logo.png';
 
-export const Sidebar: React.FC = () => {
+interface SidebarProps {
+  isOpen?: boolean;
+  onClose?: () => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => {
   const { 
     activeView, 
     setActiveView, 
@@ -97,13 +103,27 @@ export const Sidebar: React.FC = () => {
   };
 
   return (
-    <aside className="w-60 flex-shrink-0 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 flex flex-col justify-between h-screen sticky top-0 border-r border-slate-200 dark:border-slate-800 z-30 select-none transition-colors duration-200">
+    <>
+      {isOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-[1px] lg:hidden"
+          onClick={onClose}
+        />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-64 lg:w-60 flex-shrink-0 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 flex flex-col justify-between h-screen lg:sticky lg:top-0 border-r border-slate-200 dark:border-slate-800 select-none transition-transform duration-200 ${
+          isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        }`}
+      >
       <div className="flex flex-col flex-1 overflow-y-auto">
         {/* Brand Header */}
         <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <button
             type="button"
-            onClick={() => setActiveView(isSuperAdmin ? 'superadmin_tenants' : 'dashboard')}
+            onClick={() => {
+              setActiveView(isSuperAdmin ? 'superadmin_tenants' : 'dashboard');
+              onClose?.();
+            }}
             className="flex items-center focus:outline-none group text-left"
             title="Go to Dashboard"
           >
@@ -115,17 +135,30 @@ export const Sidebar: React.FC = () => {
               />
             </div>
           </button>
-          {isSuperAdmin && (
-            <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-              Root
-            </span>
-          )}
+          <div className="flex items-center gap-1.5">
+            {isSuperAdmin && (
+              <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                Root
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close navigation menu"
+              className="lg:hidden p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         {/* Quick Portal Switch */}
         <div className="px-3 pt-3">
           <button
-            onClick={handleLaunchSignatoryDemo}
+            onClick={() => {
+              handleLaunchSignatoryDemo();
+              onClose?.();
+            }}
             className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white transition-colors"
           >
             <span>Signatory Portal Demo</span>
@@ -141,7 +174,10 @@ export const Sidebar: React.FC = () => {
               <button
                 key={item.id}
                 id={item.id}
-                onClick={item.onClick}
+                onClick={() => {
+                  item.onClick?.();
+                  onClose?.();
+                }}
                 className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all ${
                   isActive
                     ? 'bg-brand-600 text-white font-semibold shadow-subtle'
@@ -214,6 +250,7 @@ export const Sidebar: React.FC = () => {
           </div>
         )}
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };

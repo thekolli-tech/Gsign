@@ -291,24 +291,24 @@ export const TemplateBuilderView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header bar */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col gap-4">
+        <div className="space-y-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2.5 min-w-0">
             {isSuperAdmin ? (
               <input
                 type="text"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="text-xl font-bold text-slate-900 dark:text-white bg-transparent border-b border-transparent hover:border-slate-300 focus:border-brand-600 outline-none"
+                className="w-full sm:w-auto sm:min-w-[320px] max-w-full text-xl font-bold text-slate-900 dark:text-white bg-transparent border-b border-transparent hover:border-slate-300 focus:border-brand-600 outline-none"
               />
             ) : (
               <h2 className="text-xl font-bold text-slate-900 dark:text-white">{name}</h2>
             )}
-            <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-50 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60">
+            <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-50 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60 shrink-0">
               {versionLabel}
             </span>
             {!isSuperAdmin && (
-              <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+              <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700 shrink-0">
                 Read-only · Super Admin Managed
               </span>
             )}
@@ -446,15 +446,15 @@ export const TemplateBuilderView: React.FC = () => {
       </div>
 
       {/* 3-Column Layout (Super Admin) or Centered A4 Read-Only Viewer (Users) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
         {/* Left Column: FIELDS (Palette - Super Admin only) */}
         {isSuperAdmin && (
-        <div className="lg:col-span-3 space-y-4">
+        <div className="xl:col-span-3 order-2 xl:order-1 space-y-4">
           <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card">
             <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
               FIELDS
             </h4>
-            <div className="space-y-1.5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-1 gap-1.5">
               {availableFieldTypes.map(f => (
                 <button
                   key={f.type}
@@ -476,7 +476,7 @@ export const TemplateBuilderView: React.FC = () => {
         )}
 
         {/* Center Column: Professional A4 Document Canvas */}
-        <div className={isSuperAdmin ? 'lg:col-span-6' : 'lg:col-span-10 lg:col-start-2'}>
+        <div className={isSuperAdmin ? 'xl:col-span-6 order-1 xl:order-2' : 'xl:col-span-10 xl:col-start-2'}>
           <div className="bg-slate-100/70 dark:bg-slate-950/60 p-3 sm:p-5 rounded-xl border border-slate-200/80 dark:border-slate-800">
             <div className="w-full max-w-[794px] mx-auto aspect-[210/297] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-sm shadow-[0_12px_36px_-12px_rgba(15,23,42,0.16)] p-7 sm:p-10 flex flex-col justify-between">
               <div className="space-y-5">
@@ -627,7 +627,7 @@ export const TemplateBuilderView: React.FC = () => {
 
         {/* Right Column: FIELD PROPERTIES (Super Admin only) */}
         {isSuperAdmin && (
-        <div className="lg:col-span-3 space-y-4">
+        <div className="xl:col-span-3 order-3 space-y-4">
           <div className="p-4 sm:p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card space-y-4">
             <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
               FIELD PROPERTIES

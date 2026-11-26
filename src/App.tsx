@@ -30,6 +30,7 @@ import { NewAgreementModal } from './components/modals/NewAgreementModal';
 
 const AppContent: React.FC = () => {
   const { activeView, authLoading, currentRole } = useApp();
+  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
   const isRootAdmin = currentRole === 'platform_owner' || currentRole === 'super_admin';
 
   if (authLoading) {
@@ -98,14 +99,14 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased selection:bg-brand-600 selection:text-white transition-colors duration-200">
-      {/* Sidebar */}
-      <Sidebar />
+    <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased selection:bg-brand-600 selection:text-white transition-colors duration-200 overflow-x-hidden">
+      {/* Sidebar (drawer on mobile/tablet, fixed rail on lg+) */}
+      <Sidebar isOpen={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-slate-50 dark:bg-slate-950 transition-colors duration-200">
-        <Header />
-        <main className="flex-1 p-6 sm:p-8 max-w-7xl w-full mx-auto">
+        <Header onOpenMenu={() => setMobileMenuOpen(true)} />
+        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
           {renderActiveView()}
         </main>
       </div>
