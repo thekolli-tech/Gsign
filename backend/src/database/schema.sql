@@ -470,6 +470,84 @@ CREATE TABLE IF NOT EXISTS consent_records (
 
 CREATE INDEX IF NOT EXISTS idx_consent_records_agreement_id ON consent_records(agreement_id);
 
+-- 28. Document Metadata (Original, Generated PDF, Signed PDF, Certificate)
+CREATE TABLE IF NOT EXISTS documents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agreement_id UUID REFERENCES agreements(id) ON DELETE CASCADE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    title VARCHAR(255) NOT NULL,
+    doc_kind VARCHAR(32) NOT NULL DEFAULT 'original', -- original, generated_pdf, signed_pdf, certificate
+    current_version INTEGER NOT NULL DEFAULT 1,
+    original_document_id UUID REFERENCES documents(id) ON DELETE SET NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, ARCHIVED
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_tenant_id ON documents(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_documents_agreement_id ON documents(agreement_id);
+
+-- 29. Immutable Document Version History
+CREATE TABLE IF NOT EXISTS document_versions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    agreement_id UUID REFERENCES agreements(id) ON DELETE CASCADE,
+    version_number INTEGER NOT NULL,
+    version_kind VARCHAR(32) NOT NULL DEFAULT 'original', -- original, generated_pdf, signed_pdf, certificate
+    file_name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(128) NOT NULL,
+    byte_size BIGINT NOT NULL,
+    sha256_hash VARCHAR(64) NOT NULL,
+    storage_provider VARCHAR(32) NOT NULL DEFAULT 's3', -- s3, local_private
+    storage_bucket VARCHAR(128) NOT NULL,
+    storage_key TEXT NOT NULL UNIQUE,
+    is_immutable BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_document_version_number UNIQUE (document_id, version_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_versions_tenant_id ON document_versions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_document_versions_document_id ON document_versions(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_versions_agreement_id ON document_versions(agreement_id);
+
+-- 30. Signing Completion Certificates / Receipts
+CREATE TABLE IF NOT EXISTS signing_certificates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agreement_id UUID NOT NULL REFERENCES agreements(id) ON DELETE CASCADE,
+    signing_request_id UUID REFERENCES signing_requests(id) ON DELETE SET NULL,
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    document_version_id UUID NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+    certificate_number VARCHAR(64) NOT NULL UNIQUE,
+    agreement_sha256 VARCHAR(64) NOT NULL,
+    final_pdf_sha256 VARCHAR(64) NOT NULL,
+    issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata JSONB NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_signing_certificates_tenant_id ON signing_certificates(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_signing_certificates_agreement_id ON signing_certificates(agreement_id);
+
+-- 31. Document Access Audit Logs
+CREATE TABLE IF NOT EXISTS document_access_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    document_version_id UUID REFERENCES document_versions(id) ON DELETE SET NULL,
+    actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    actor_email VARCHAR(255) NOT NULL,
+    action VARCHAR(48) NOT NULL, -- UPLOAD, GENERATE_PDF, GENERATE_SIGNED_PDF, GENERATE_CERTIFICATE, DOWNLOAD, PRESIGNED_URL, VERIFY_INTEGRITY
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_access_logs_tenant_id ON document_access_logs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_document_access_logs_document_id ON document_access_logs(document_id);
+
 -- =========================================================
 -- POSTGRESQL ROW-LEVEL SECURITY (RLS) POLICIES
 -- =========================================================
@@ -491,6 +569,10 @@ ALTER TABLE signing_recipients ENABLE ROW LEVEL SECURITY;
 ALTER TABLE signing_otp_attempts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE signature_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE consent_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE document_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE signing_certificates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE document_access_logs ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for table owners / application roles
 ALTER TABLE tenant_memberships FORCE ROW LEVEL SECURITY;
@@ -509,6 +591,10 @@ ALTER TABLE signing_recipients FORCE ROW LEVEL SECURITY;
 ALTER TABLE signing_otp_attempts FORCE ROW LEVEL SECURITY;
 ALTER TABLE signature_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE consent_records FORCE ROW LEVEL SECURITY;
+ALTER TABLE documents FORCE ROW LEVEL SECURITY;
+ALTER TABLE document_versions FORCE ROW LEVEL SECURITY;
+ALTER TABLE signing_certificates FORCE ROW LEVEL SECURITY;
+ALTER TABLE document_access_logs FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if any
 DROP POLICY IF EXISTS tenant_isolation_memberships ON tenant_memberships;
@@ -527,6 +613,10 @@ DROP POLICY IF EXISTS tenant_isolation_signing_recipients ON signing_recipients;
 DROP POLICY IF EXISTS tenant_isolation_signing_otp_attempts ON signing_otp_attempts;
 DROP POLICY IF EXISTS tenant_isolation_signature_records ON signature_records;
 DROP POLICY IF EXISTS tenant_isolation_consent_records ON consent_records;
+DROP POLICY IF EXISTS tenant_isolation_documents ON documents;
+DROP POLICY IF EXISTS tenant_isolation_document_versions ON document_versions;
+DROP POLICY IF EXISTS tenant_isolation_signing_certificates ON signing_certificates;
+DROP POLICY IF EXISTS tenant_isolation_document_access_logs ON document_access_logs;
 
 -- RLS Policy on tenant_memberships:
 -- Evaluates app.is_super_admin = 'true' OR tenant_id = app.current_tenant_id
@@ -713,6 +803,54 @@ WITH CHECK (
 
 -- RLS Policy on consent_records:
 CREATE POLICY tenant_isolation_consent_records ON consent_records
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on documents:
+CREATE POLICY tenant_isolation_documents ON documents
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on document_versions:
+CREATE POLICY tenant_isolation_document_versions ON document_versions
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on signing_certificates:
+CREATE POLICY tenant_isolation_signing_certificates ON signing_certificates
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on document_access_logs:
+CREATE POLICY tenant_isolation_document_access_logs ON document_access_logs
 FOR ALL
 USING (
     NULLIF(current_setting('app.is_super_admin', true), '') = 'true'

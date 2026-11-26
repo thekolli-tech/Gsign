@@ -5,10 +5,12 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { DatabaseService } from '../database/database.service';
+import { DocumentsService } from '../documents/documents.service';
 import { RedisService } from '../redis/redis.service';
 import {
   CreateSigningRequestDto,
@@ -30,6 +32,7 @@ export class SigningService {
   constructor(
     private readonly db: DatabaseService,
     private readonly redis: RedisService,
+    @Optional() private readonly documentsService?: DocumentsService,
   ) {}
 
   private hashValue(value: string): string {
@@ -709,7 +712,7 @@ export class SigningService {
 
     const ctx = await this.resolveRecipientContextByToken(rawToken);
 
-    return this.db.executeWithTenantContext(ctx.tenantId, async (client) => {
+    const result = await this.db.executeWithTenantContext(ctx.tenantId, async (client) => {
       const reqRes = await client.query(
         `SELECT * FROM signing_requests WHERE id = $1::uuid FOR UPDATE`,
         [ctx.signingRequestId],
@@ -887,6 +890,33 @@ export class SigningService {
         document_hash: documentHash,
       };
     });
+
+    if (result.agreement_completed && this.documentsService) {
+      try {
+        const finalized = await this.documentsService.generateFinalSignedPackage(
+          ctx.tenantId,
+          ctx.agreementId,
+          ctx.signingRequestId,
+          { email: 'signing-engine@gsign.in', role: 'System' },
+          ip,
+          userAgent,
+        );
+        return {
+          ...result,
+          certificate_number: finalized.certificate?.certificate_number,
+          signed_document_id:
+            'signed_document' in finalized
+              ? finalized.signed_document?.id
+              : finalized.certificate?.metadata?.signed_document_id,
+        };
+      } catch (err) {
+        this.logger.warn(
+          `Automatic signed PDF finalization failed for agreement ${ctx.agreementId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    return result;
   }
 
   async rejectSigning(rawToken: string, dto: RejectSigningDto, ip?: string) {

@@ -1,11 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Download, 
   ArrowLeft, 
   CheckCircle2, 
   Copy, 
   PenTool,
-  Lock
+  Lock,
+  Upload,
+  FileText,
+  ShieldCheck
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../services/api';
@@ -30,8 +33,67 @@ export const AgreementDetailView: React.FC = () => {
   const [verifyingHash, setVerifyingHash] = useState(false);
   const [hashVerified, setHashVerified] = useState(false);
   const [creatingSigningLink, setCreatingSigningLink] = useState(false);
+  const [serverDocs, setServerDocs] = useState<any[]>([]);
+  const [docBusy, setDocBusy] = useState(false);
 
   const agreement = agreements.find(a => a.id === selectedAgreementId) || agreements[0];
+  const agreementUuid = (agreement as any)?.uuid || agreement?.id;
+
+  const loadServerDocs = async () => {
+    if (!agreementUuid) return;
+    const docs = await api.getDocuments(agreementUuid);
+    setServerDocs(docs);
+  };
+
+  useEffect(() => {
+    loadServerDocs();
+  }, [agreementUuid]);
+
+  const handleUploadOriginal = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !agreementUuid) return;
+    setDocBusy(true);
+    try {
+      await api.uploadDocument(file, { agreement_id: agreementUuid, title: `${agreement.id} — ${file.name}` });
+      addToast('Document Uploaded', `${file.name} stored in private encrypted vault.`, 'success');
+      await loadServerDocs();
+    } catch (err: any) {
+      addToast('Upload Failed', err.message || 'Could not upload file', 'error');
+    } finally {
+      setDocBusy(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleGenerateServerPdf = async () => {
+    if (!agreementUuid) return;
+    setDocBusy(true);
+    try {
+      await api.generateAgreementPdf(agreementUuid);
+      addToast('PDF Generated', 'Server-side immutable PDF version created.', 'success');
+      await loadServerDocs();
+    } catch (err: any) {
+      addToast('Generation Failed', err.message || 'Could not generate PDF', 'error');
+    } finally {
+      setDocBusy(false);
+    }
+  };
+
+  const handleVerifyDocument = async (docId: string, versionId?: string) => {
+    setDocBusy(true);
+    try {
+      const res = await api.verifyDocumentIntegrity(docId, versionId);
+      addToast(
+        res.verified ? 'Integrity Verified' : 'Integrity Mismatch',
+        `SHA-256 ${res.verified ? 'matches' : 'does not match'}: ${res.actual_sha256.slice(0, 16)}...`,
+        res.verified ? 'success' : 'error',
+      );
+    } catch (err: any) {
+      addToast('Verification Failed', err.message || 'Could not verify document', 'error');
+    } finally {
+      setDocBusy(false);
+    }
+  };
 
   if (!agreement) {
     return (
@@ -445,6 +507,85 @@ export const AgreementDetailView: React.FC = () => {
               <span>Timestamp: Genemax Server</span>
               <span className="font-mono">UTC+05:30</span>
             </div>
+          </div>
+
+          {/* Server Documents, Versions & Integrity Card */}
+          <div className="mt-6 p-6 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <FileText size={15} className="text-brand-600" />
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                  Documents & Integrity
+                </h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700">
+                  <Upload size={11} />
+                  <span>Upload</span>
+                  <input type="file" className="hidden" disabled={docBusy} onChange={handleUploadOriginal} />
+                </label>
+                <button
+                  type="button"
+                  disabled={docBusy}
+                  onClick={handleGenerateServerPdf}
+                  className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-brand-600 hover:bg-brand-700 text-white disabled:opacity-60"
+                >
+                  Generate PDF
+                </button>
+              </div>
+            </div>
+
+            {serverDocs.length === 0 ? (
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                No server-stored documents yet. Upload an original file or generate a server PDF.
+              </p>
+            ) : (
+              <div className="space-y-2.5">
+                {serverDocs.map((doc) => {
+                  const latest = doc.versions?.[0];
+                  return (
+                    <div
+                      key={doc.id}
+                      className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/50 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                          {doc.title}
+                        </span>
+                        <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-brand-50 dark:bg-brand-950/60 text-brand-600 dark:text-brand-400">
+                          {doc.doc_kind} · v{doc.current_version}
+                        </span>
+                      </div>
+                      {latest && (
+                        <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                          <span className="font-mono truncate">
+                            SHA-256: {latest.sha256_hash.slice(0, 14)}...
+                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              disabled={docBusy}
+                              onClick={() => handleVerifyDocument(doc.id, latest.id)}
+                              className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline font-medium"
+                            >
+                              <ShieldCheck size={11} />
+                              <span>Verify</span>
+                            </button>
+                            <a
+                              href={api.getDocumentDownloadUrl(doc.id, latest.id)}
+                              className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-400 hover:underline font-medium"
+                            >
+                              <Download size={11} />
+                              <span>Download</span>
+                            </a>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>

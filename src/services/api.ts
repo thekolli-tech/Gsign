@@ -481,4 +481,83 @@ export const api = {
     if (!res.ok) throw new Error(data.message || 'Failed to reject agreement.');
     return data;
   },
+
+  // 9. Document Management Engine
+  async uploadDocument(file: File, params?: { agreement_id?: string; title?: string }) {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (params?.agreement_id) formData.append('agreement_id', params.agreement_id);
+    if (params?.title) formData.append('title', params.title);
+
+    const res = await fetch(`${API_BASE}/documents/upload`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to upload document.');
+    return data;
+  },
+
+  async generateAgreementPdf(agreementId: string, title?: string) {
+    const res = await fetch(`${API_BASE}/documents/agreements/${encodeURIComponent(agreementId)}/generate-pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ title }),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to generate agreement PDF.');
+    return data;
+  },
+
+  async finalizeSignedPackage(agreementId: string) {
+    const res = await fetch(`${API_BASE}/documents/agreements/${encodeURIComponent(agreementId)}/finalize`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to finalize signed PDF package.');
+    return data;
+  },
+
+  async getDocuments(agreementId?: string) {
+    const qs = agreementId ? `?agreementId=${encodeURIComponent(agreementId)}` : '';
+    const res = await fetch(`${API_BASE}/documents${qs}`, { credentials: 'include' });
+    if (!res.ok) return [];
+    const data = await parseJsonSafe(res);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async getCertificates(agreementId?: string) {
+    const qs = agreementId ? `?agreementId=${encodeURIComponent(agreementId)}` : '';
+    const res = await fetch(`${API_BASE}/documents/certificates${qs}`, { credentials: 'include' });
+    if (!res.ok) return [];
+    const data = await parseJsonSafe(res);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async verifyDocumentIntegrity(documentId: string, versionId?: string) {
+    const qs = versionId ? `?versionId=${encodeURIComponent(versionId)}` : '';
+    const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(documentId)}/verify${qs}`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to verify document integrity.');
+    return data;
+  },
+
+  async getDocumentAuditLogs(documentId: string) {
+    const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(documentId)}/audit-logs`, {
+      credentials: 'include',
+    });
+    if (!res.ok) return [];
+    const data = await parseJsonSafe(res);
+    return Array.isArray(data) ? data : [];
+  },
+
+  getDocumentDownloadUrl(documentId: string, versionId?: string) {
+    const qs = versionId ? `?versionId=${encodeURIComponent(versionId)}` : '';
+    return `${API_BASE}/documents/${encodeURIComponent(documentId)}/download${qs}`;
+  },
 };

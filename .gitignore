@@ -29,3 +29,6 @@ dist-ssr
 
 .vercel
 .env*
+
+.local_storage/
+backend/.local_storage/

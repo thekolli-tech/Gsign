@@ -12,6 +12,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { AgreementsModule } from './agreements/agreements.module';
 import { TemplatesModule } from './templates/templates.module';
 import { SigningModule } from './signing/signing.module';
+import { DocumentsModule } from './documents/documents.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { SigningModule } from './signing/signing.module';
     AgreementsModule,
     TemplatesModule,
     SigningModule,
+    DocumentsModule,
   ],
 })
 export class AppModule {}
