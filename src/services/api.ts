@@ -645,4 +645,51 @@ export const api = {
     if (!res.ok) throw new Error(data.message || 'Failed to remove tenant.');
     return data;
   },
+
+  async getTenantBranding() {
+    const res = await fetch(`${API_BASE}/tenants/current/branding`, {
+      credentials: 'include',
+    });
+    if (!res.ok) return null;
+    return parseJsonSafe(res);
+  },
+
+  async updateTenantBranding(payload: {
+    logoText?: string;
+    logoUrl?: string | null;
+    brandColor?: string;
+    emailDisplayName?: string;
+    customDomain?: string;
+    dnsVerified?: boolean;
+    hidePoweredBy?: boolean;
+  }) {
+    const res = await fetch(`${API_BASE}/tenants/current/branding`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to save branding settings.');
+    return data;
+  },
+
+  async verifyTenantDomain(domain: string) {
+    const res = await fetch(`${API_BASE}/tenants/current/verify-domain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ domain }),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to verify domain.');
+    return data as {
+      verified: boolean;
+      domain: string;
+      cnameRecords: string[];
+      aRecords: string[];
+      aaaaRecords: string[];
+      message: string;
+    };
+  },
 };

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS tenants (
 
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_by UUID;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS branding_json JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants(slug);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);

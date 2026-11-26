@@ -8,6 +8,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { api } from '../../services/api';
 
 export const BrandingDomainView: React.FC = () => {
   const { branding, setBranding, addToast } = useApp();
@@ -18,8 +19,18 @@ export const BrandingDomainView: React.FC = () => {
   const [emailDisplayName, setEmailDisplayName] = useState(branding.emailDisplayName);
   const [customDomain, setCustomDomain] = useState(branding.customDomain);
   const [dnsStatus, setDnsStatus] = useState<'pending' | 'checking' | 'verified'>(branding.dnsVerified ? 'verified' : 'pending');
+  const [saving, setSaving] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setLogoText(branding.logoText);
+    setLogoUrl(branding.logoUrl);
+    setBrandColor(branding.brandColor);
+    setEmailDisplayName(branding.emailDisplayName);
+    setCustomDomain(branding.customDomain);
+    setDnsStatus(branding.dnsVerified ? 'verified' : 'pending');
+  }, [branding]);
 
   // Clean up object URL on unmount if any blob URL was created
   useEffect(() => {
@@ -85,27 +96,59 @@ export const BrandingDomainView: React.FC = () => {
     addToast('Logo Removed', 'Reverted to default brand placeholder. Click "Save changes" to apply.', 'info');
   };
 
-  const handleDnsCheck = () => {
+  const handleDnsCheck = async () => {
+    const cleanDomain = customDomain.trim().toLowerCase();
+    if (!cleanDomain) {
+      addToast('Domain Required', 'Enter a custom domain hostname before verifying DNS.', 'error');
+      return;
+    }
     setDnsStatus('checking');
-    setTimeout(() => {
-      setDnsStatus('verified');
-      setBranding(prev => ({ ...prev, dnsVerified: true }));
-      addToast('DNS Verified', `CNAME for ${customDomain} resolved successfully with active SSL certificate.`, 'success');
-    }, 1000);
+    try {
+      const result = await api.verifyTenantDomain(cleanDomain);
+      setDnsStatus(result.verified ? 'verified' : 'pending');
+      setBranding(prev => ({
+        ...prev,
+        customDomain: result.domain,
+        dnsVerified: result.verified,
+      }));
+      addToast(
+        result.verified ? 'DNS Verified' : 'DNS Verification Failed',
+        result.message,
+        result.verified ? 'success' : 'error',
+      );
+    } catch (err: any) {
+      setDnsStatus('pending');
+      addToast('DNS Check Failed', err.message || 'Could not verify domain DNS.', 'error');
+    }
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    setBranding(prev => ({
-      ...prev,
-      logoText,
-      logoUrl,
-      brandColor,
-      emailDisplayName,
-      customDomain,
-      dnsVerified: dnsStatus === 'verified',
-    }));
-    addToast('Branding Saved', 'Whitelabel assets and custom domain configuration updated.', 'success');
+    setSaving(true);
+    try {
+      const saved = await api.updateTenantBranding({
+        logoText,
+        logoUrl: logoUrl ?? null,
+        brandColor,
+        emailDisplayName,
+        customDomain: customDomain.trim().toLowerCase(),
+        dnsVerified: dnsStatus === 'verified',
+      });
+      setBranding(prev => ({
+        ...prev,
+        logoText: saved.logoText ?? logoText,
+        logoUrl: saved.logoUrl,
+        brandColor: saved.brandColor ?? brandColor,
+        emailDisplayName: saved.emailDisplayName ?? emailDisplayName,
+        customDomain: saved.customDomain ?? customDomain,
+        dnsVerified: Boolean(saved.dnsVerified),
+      }));
+      addToast('Branding Saved', 'Whitelabel assets and custom domain saved permanently to your workspace.', 'success');
+    } catch (err: any) {
+      addToast('Save Failed', err.message || 'Could not save branding settings.', 'error');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -285,7 +328,15 @@ export const BrandingDomainView: React.FC = () => {
               <input
                 type="text"
                 value={customDomain}
-                onChange={e => setCustomDomain(e.target.value)}
+                onChange={e => {
+                  const next = e.target.value;
+                  setCustomDomain(next);
+                  if (next.trim().toLowerCase() !== branding.customDomain.trim().toLowerCase() || !branding.dnsVerified) {
+                    setDnsStatus('pending');
+                  } else {
+                    setDnsStatus('verified');
+                  }
+                }}
                 className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-lg outline-none focus:border-brand-600 text-slate-800 dark:text-slate-100 font-mono"
               />
             </div>
@@ -294,7 +345,7 @@ export const BrandingDomainView: React.FC = () => {
             <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 space-y-2.5">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs">
                 <span className="text-slate-600 dark:text-slate-300">
-                  DNS check: add CNAME <strong>sign</strong> → [YOUR TARGET]. SSL is issued after verification.
+                  DNS check: add CNAME <strong>{customDomain.split('.')[0] || 'sign'}</strong> → <code>cname.vercel-dns.com</code>. SSL is issued after verification.
                 </span>
                 {dnsStatus === 'verified' ? (
                   <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/60 flex items-center gap-1">

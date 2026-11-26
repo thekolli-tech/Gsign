@@ -8,6 +8,7 @@ import {
   Get,
   NotFoundException,
   Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -15,6 +16,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import {
+  IsBoolean,
   IsEmail,
   IsInt,
   IsNotEmpty,
@@ -26,6 +28,7 @@ import {
   MinLength,
 } from 'class-validator';
 import * as crypto from 'crypto';
+import * as dns from 'dns/promises';
 import { Request } from 'express';
 import { CryptoService } from '../auth/crypto.service';
 import { DatabaseService } from '../database/database.service';
@@ -71,16 +74,66 @@ export class CreateTenantByOwnerDto {
   domain?: string;
 }
 
+class UpdateBrandingDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  logoText?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(4_000_000)
+  logoUrl?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  brandColor?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  emailDisplayName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  customDomain?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  dnsVerified?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  hidePoweredBy?: boolean;
+}
+
+class VerifyDomainDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  domain!: string;
+}
+
 @ApiTags('Tenants')
 @ApiBearerAuth()
 @UseGuards(AuthGuard)
 @Controller('tenants')
 export class TenantsController {
+  private brandingColumnChecked = false;
+
   constructor(
     private readonly db: DatabaseService,
     private readonly redis: RedisService,
     private readonly cryptoService: CryptoService,
   ) {}
+
+  private async ensureBrandingColumn() {
+    if (this.brandingColumnChecked) return;
+    await this.db.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS branding_json JSONB;`);
+    this.brandingColumnChecked = true;
+  }
 
   @Get('current')
   @ApiOperation({ summary: 'Get details for the current active tenant' })
@@ -117,6 +170,144 @@ export class TenantsController {
     }
 
     return tenant;
+  }
+
+  @Get('current/branding')
+  @ApiOperation({ summary: 'Get persisted branding & custom domain settings for the current tenant' })
+  async getCurrentBranding(@CurrentTenant() tenantId: string | null) {
+    if (!tenantId) {
+      return {};
+    }
+    await this.ensureBrandingColumn();
+    const res = await this.db.query(
+      `SELECT branding_json FROM tenants WHERE id = $1::uuid LIMIT 1`,
+      [tenantId],
+    );
+    return res.rows[0]?.branding_json || {};
+  }
+
+  @Patch('current/branding')
+  @ApiOperation({ summary: 'Persist branding & custom domain settings for the current tenant' })
+  async updateCurrentBranding(
+    @CurrentTenant() tenantId: string | null,
+    @Body() dto: UpdateBrandingDto,
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('Tenant context is required to save workspace branding.');
+    }
+    await this.ensureBrandingColumn();
+
+    const existingRes = await this.db.query(
+      `SELECT branding_json FROM tenants WHERE id = $1::uuid LIMIT 1`,
+      [tenantId],
+    );
+    if (existingRes.rows.length === 0) {
+      throw new NotFoundException('Tenant not found');
+    }
+
+    const prev = existingRes.rows[0]?.branding_json || {};
+    const nextDomain =
+      dto.customDomain !== undefined
+        ? dto.customDomain.trim().toLowerCase()
+        : (prev.customDomain || '');
+    const domainChanged =
+      dto.customDomain !== undefined &&
+      nextDomain !== (prev.customDomain || '').trim().toLowerCase();
+
+    const merged = {
+      logoText: dto.logoText !== undefined ? dto.logoText.trim() : prev.logoText,
+      logoUrl: dto.logoUrl === null ? undefined : (dto.logoUrl !== undefined ? dto.logoUrl : prev.logoUrl),
+      brandColor: dto.brandColor !== undefined ? dto.brandColor.trim() : prev.brandColor,
+      emailDisplayName: dto.emailDisplayName !== undefined ? dto.emailDisplayName.trim() : prev.emailDisplayName,
+      customDomain: nextDomain,
+      dnsVerified: domainChanged
+        ? false
+        : (dto.dnsVerified !== undefined ? dto.dnsVerified : Boolean(prev.dnsVerified)),
+      hidePoweredBy: dto.hidePoweredBy !== undefined ? dto.hidePoweredBy : Boolean(prev.hidePoweredBy),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await this.db.query(
+      `UPDATE tenants SET branding_json = $2::jsonb, updated_at = NOW() WHERE id = $1::uuid`,
+      [tenantId, JSON.stringify(merged)],
+    );
+
+    return merged;
+  }
+
+  @Post('current/verify-domain')
+  @ApiOperation({ summary: 'Perform real-time DNS verification for a custom domain' })
+  async verifyCurrentDomain(
+    @CurrentTenant() tenantId: string | null,
+    @Body() dto: VerifyDomainDto,
+  ) {
+    if (!tenantId) {
+      throw new BadRequestException('Tenant context is required to verify a custom domain.');
+    }
+    await this.ensureBrandingColumn();
+
+    const domain = dto.domain.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+    if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain)) {
+      throw new BadRequestException('Enter a valid domain hostname (e.g. sign.company.com).');
+    }
+
+    let cnameRecords: string[] = [];
+    let aRecords: string[] = [];
+    let aaaaRecords: string[] = [];
+
+    try {
+      cnameRecords = await dns.resolveCname(domain);
+    } catch {
+      cnameRecords = [];
+    }
+    try {
+      aRecords = await dns.resolve4(domain);
+    } catch {
+      aRecords = [];
+    }
+    try {
+      aaaaRecords = await dns.resolve6(domain);
+    } catch {
+      aaaaRecords = [];
+    }
+
+    const expectedTargets = ['cname.vercel-dns.com', 'vercel-dns.com', 'gsign.in', 'www.gsign.in'];
+    const cnameMatched = cnameRecords.some((target) => {
+      const clean = target.toLowerCase().replace(/\.$/, '');
+      return expectedTargets.some((exp) => clean === exp || clean.endsWith(`.${exp}`));
+    });
+    const hasLiveIp = aRecords.length > 0 || aaaaRecords.length > 0;
+    const isGsignSubdomain = domain === 'gsign.in' || domain.endsWith('.gsign.in');
+    const verified = cnameMatched || (isGsignSubdomain && hasLiveIp);
+
+    const existingRes = await this.db.query(
+      `SELECT branding_json FROM tenants WHERE id = $1::uuid LIMIT 1`,
+      [tenantId],
+    );
+    const prev = existingRes.rows[0]?.branding_json || {};
+    const merged = {
+      ...prev,
+      customDomain: domain,
+      dnsVerified: verified,
+      verifiedAt: verified ? new Date().toISOString() : null,
+    };
+    await this.db.query(
+      `UPDATE tenants SET branding_json = $2::jsonb, updated_at = NOW() WHERE id = $1::uuid`,
+      [tenantId, JSON.stringify(merged)],
+    );
+
+    return {
+      verified,
+      domain,
+      cnameRecords,
+      aRecords,
+      aaaaRecords,
+      message: verified
+        ? `DNS verified for ${domain} (${cnameRecords[0] || aRecords[0] || 'active DNS'}).`
+        : cnameRecords.length > 0
+          ? `CNAME for ${domain} points to ${cnameRecords[0]} instead of cname.vercel-dns.com.`
+          : `No CNAME record found for ${domain}. Add CNAME pointing to cname.vercel-dns.com and retry.`,
+    };
   }
 
   @UseGuards(SuperAdminGuard)

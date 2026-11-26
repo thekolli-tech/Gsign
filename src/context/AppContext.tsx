@@ -515,6 +515,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }))
       );
     }
+
+    if (session?.tenantId) {
+      const savedBranding = await api.getTenantBranding().catch(() => null);
+      if (savedBranding && typeof savedBranding === 'object') {
+        setBranding({
+          ...initialBranding,
+          ...savedBranding,
+          logoUrl: savedBranding.logoUrl === undefined ? initialBranding.logoUrl : savedBranding.logoUrl,
+        });
+      } else {
+        setBranding(initialBranding);
+      }
+    } else {
+      setBranding(initialBranding);
+    }
   }, []);
 
   // Restore active session on page refresh
