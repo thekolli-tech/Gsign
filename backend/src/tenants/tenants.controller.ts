@@ -103,8 +103,8 @@ export class TenantsController {
     }
 
     const res = await this.db.query(
-      `SELECT id, name, slug, cin, gstin, contact_email, contact_phone, status, deleted_at, created_at, updated_at
-       FROM tenants WHERE id = $1`,
+      `SELECT t.id, t.name, t.slug, t.cin, t.gstin, t.contact_email, t.contact_phone, t.status, (to_jsonb(t)->>'deleted_at') AS deleted_at, t.created_at, t.updated_at
+       FROM tenants t WHERE t.id = $1`,
       [tenantId],
     );
 
@@ -127,7 +127,7 @@ export class TenantsController {
     const showArchived = includeArchived === 'true';
     const res = await this.db.executeAsSuperAdmin(async (client) => {
       return client.query(
-        `SELECT t.id, t.name, t.slug, t.cin, t.gstin, t.contact_email, t.status, t.deleted_at, t.created_at,
+        `SELECT t.id, t.name, t.slug, t.cin, t.gstin, t.contact_email, t.status, (to_jsonb(t)->>'deleted_at') AS deleted_at, t.created_at,
                 COUNT(DISTINCT tm.user_id) as member_count,
                 sp.name as plan_name,
                 ts.current_period_end,
@@ -140,7 +140,7 @@ export class TenantsController {
          LEFT JOIN tenant_memberships tm ON t.id = tm.tenant_id
          LEFT JOIN tenant_subscriptions ts ON t.id = ts.tenant_id
          LEFT JOIN subscription_plans sp ON ts.plan_id = sp.id
-         ${showArchived ? '' : "WHERE t.deleted_at IS NULL AND t.status <> 'Archived'"}
+         ${showArchived ? '' : "WHERE (to_jsonb(t)->>'deleted_at') IS NULL AND t.status <> 'Archived'"}
          GROUP BY t.id, sp.name, ts.status, ts.current_period_end
          ORDER BY t.created_at DESC`,
       );
@@ -197,7 +197,7 @@ export class TenantsController {
       const tenantRes = await client.query(
         `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
          VALUES ($1, $2, $3, '+91 00000 00000', 'Active')
-         RETURNING id, name, slug, contact_email, status, deleted_at, created_at`,
+         RETURNING id, name, slug, contact_email, status, created_at`,
         [companyName, uniqueSlug, adminEmail],
       );
       const tenant = tenantRes.rows[0];
@@ -271,9 +271,9 @@ export class TenantsController {
 
     const outcome = await this.db.executeAsSuperAdmin(async (client) => {
       const res = await client.query(
-        `SELECT id, name, slug, status, deleted_at
-         FROM tenants
-         WHERE id = $1::uuid
+        `SELECT t.id, t.name, t.slug, t.status, (to_jsonb(t)->>'deleted_at') AS deleted_at
+         FROM tenants t
+         WHERE t.id = $1::uuid
          FOR UPDATE`,
         [id],
       );
@@ -295,13 +295,27 @@ export class TenantsController {
       }
 
       // 1. Soft-delete / archive tenant (preserving all historical records & foreign keys)
-      const updTenant = await client.query(
-        `UPDATE tenants
-         SET status = 'Archived', deleted_at = NOW(), deleted_by = $2::uuid, updated_at = NOW()
-         WHERE id = $1::uuid
-         RETURNING deleted_at`,
-        [id, user.id],
+      const colRes = await client.query(
+        `SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'tenants' AND column_name = 'deleted_at'
+         LIMIT 1`,
       );
+      const hasDeletedAtCol = colRes.rows.length > 0;
+      const updTenant = hasDeletedAtCol
+        ? await client.query(
+            `UPDATE tenants
+             SET status = 'Archived', deleted_at = NOW(), deleted_by = $2::uuid, updated_at = NOW()
+             WHERE id = $1::uuid
+             RETURNING deleted_at`,
+            [id, user.id],
+          )
+        : await client.query(
+            `UPDATE tenants
+             SET status = 'Archived', updated_at = NOW()
+             WHERE id = $1::uuid
+             RETURNING updated_at AS deleted_at`,
+            [id],
+          );
 
       // 2. Deactivate tenant memberships
       await client.query(

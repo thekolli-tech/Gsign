@@ -849,67 +849,77 @@ export class DocumentsService {
   }
 
   async listDocuments(tenantId: string, agreementId?: string) {
-    return this.db.executeWithTenantContext(tenantId, async (client) => {
-      const docsRes = agreementId
-        ? await client.query(
-            `SELECT * FROM documents WHERE tenant_id = $1::uuid AND agreement_id = $2::uuid ORDER BY created_at DESC`,
-            [tenantId, agreementId],
-          )
-        : await client.query(
-            `SELECT * FROM documents WHERE tenant_id = $1::uuid ORDER BY created_at DESC`,
-            [tenantId],
-          );
+    try {
+      return await this.db.executeWithTenantContext(tenantId, async (client) => {
+        const docsRes = agreementId
+          ? await client.query(
+              `SELECT * FROM documents WHERE tenant_id = $1::uuid AND agreement_id = $2::uuid ORDER BY created_at DESC`,
+              [tenantId, agreementId],
+            )
+          : await client.query(
+              `SELECT * FROM documents WHERE tenant_id = $1::uuid ORDER BY created_at DESC`,
+              [tenantId],
+            );
 
-      const verRes = agreementId
-        ? await client.query(
-            `SELECT id, document_id, agreement_id, version_number, version_kind, file_name,
-                    mime_type, byte_size, sha256_hash, storage_provider, is_immutable, created_at
-             FROM document_versions
-             WHERE tenant_id = $1::uuid AND agreement_id = $2::uuid
-             ORDER BY version_number DESC`,
-            [tenantId, agreementId],
-          )
-        : await client.query(
-            `SELECT id, document_id, agreement_id, version_number, version_kind, file_name,
-                    mime_type, byte_size, sha256_hash, storage_provider, is_immutable, created_at
-             FROM document_versions
-             WHERE tenant_id = $1::uuid
-             ORDER BY version_number DESC`,
-            [tenantId],
-          );
+        const verRes = agreementId
+          ? await client.query(
+              `SELECT id, document_id, agreement_id, version_number, version_kind, file_name,
+                      mime_type, byte_size, sha256_hash, storage_provider, is_immutable, created_at
+               FROM document_versions
+               WHERE tenant_id = $1::uuid AND agreement_id = $2::uuid
+               ORDER BY version_number DESC`,
+              [tenantId, agreementId],
+            )
+          : await client.query(
+              `SELECT id, document_id, agreement_id, version_number, version_kind, file_name,
+                      mime_type, byte_size, sha256_hash, storage_provider, is_immutable, created_at
+               FROM document_versions
+               WHERE tenant_id = $1::uuid
+               ORDER BY version_number DESC`,
+              [tenantId],
+            );
 
-      return docsRes.rows.map((doc) => ({
-        ...doc,
-        versions: verRes.rows.filter((v) => v.document_id === doc.id),
-      }));
-    });
+        return docsRes.rows.map((doc) => ({
+          ...doc,
+          versions: verRes.rows.filter((v) => v.document_id === doc.id),
+        }));
+      });
+    } catch (err: any) {
+      if (err?.code === '42P01') return [];
+      throw err;
+    }
   }
 
   async listCertificates(tenantId: string, agreementId?: string) {
-    return this.db.executeWithTenantContext(tenantId, async (client) => {
-      const res = agreementId
-        ? await client.query(
-            `SELECT sc.*, a.agreement_number, a.template_type, a.recipient_name, a.recipient_email,
-                    dv.file_name, dv.byte_size, dv.sha256_hash AS certificate_sha256
-             FROM signing_certificates sc
-             JOIN agreements a ON a.id = sc.agreement_id
-             JOIN document_versions dv ON dv.id = sc.document_version_id
-             WHERE sc.tenant_id = $1::uuid AND sc.agreement_id = $2::uuid
-             ORDER BY sc.issued_at DESC`,
-            [tenantId, agreementId],
-          )
-        : await client.query(
-            `SELECT sc.*, a.agreement_number, a.template_type, a.recipient_name, a.recipient_email,
-                    dv.file_name, dv.byte_size, dv.sha256_hash AS certificate_sha256
-             FROM signing_certificates sc
-             JOIN agreements a ON a.id = sc.agreement_id
-             JOIN document_versions dv ON dv.id = sc.document_version_id
-             WHERE sc.tenant_id = $1::uuid
-             ORDER BY sc.issued_at DESC`,
-            [tenantId],
-          );
-      return res.rows;
-    });
+    try {
+      return await this.db.executeWithTenantContext(tenantId, async (client) => {
+        const res = agreementId
+          ? await client.query(
+              `SELECT sc.*, a.agreement_number, a.template_type, a.recipient_name, a.recipient_email,
+                      dv.file_name, dv.byte_size, dv.sha256_hash AS certificate_sha256
+               FROM signing_certificates sc
+               JOIN agreements a ON a.id = sc.agreement_id
+               JOIN document_versions dv ON dv.id = sc.document_version_id
+               WHERE sc.tenant_id = $1::uuid AND sc.agreement_id = $2::uuid
+               ORDER BY sc.issued_at DESC`,
+              [tenantId, agreementId],
+            )
+          : await client.query(
+              `SELECT sc.*, a.agreement_number, a.template_type, a.recipient_name, a.recipient_email,
+                      dv.file_name, dv.byte_size, dv.sha256_hash AS certificate_sha256
+               FROM signing_certificates sc
+               JOIN agreements a ON a.id = sc.agreement_id
+               JOIN document_versions dv ON dv.id = sc.document_version_id
+               WHERE sc.tenant_id = $1::uuid
+               ORDER BY sc.issued_at DESC`,
+              [tenantId],
+            );
+        return res.rows;
+      });
+    } catch (err: any) {
+      if (err?.code === '42P01') return [];
+      throw err;
+    }
   }
 
   async getDocumentAccessLogs(tenantId: string, documentId: string) {

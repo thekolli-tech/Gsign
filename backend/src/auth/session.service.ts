@@ -159,7 +159,7 @@ export class SessionService {
       return client.query(
         `SELECT s.id, s.user_id, s.tenant_id, s.expires_at, s.revoked_at,
                 u.email, u.full_name, u.is_super_admin, u.is_platform_owner, u.must_change_password, u.is_active,
-                t.status as tenant_status, t.deleted_at as tenant_deleted_at
+                t.status as tenant_status, (to_jsonb(t)->>'deleted_at') as tenant_deleted_at
          FROM sessions s
          JOIN users u ON s.user_id = u.id
          LEFT JOIN tenants t ON s.tenant_id = t.id

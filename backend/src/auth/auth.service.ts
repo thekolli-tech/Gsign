@@ -824,7 +824,7 @@ export class AuthService {
 
     const tenantName = await this.db.executeWithTenantContext(inviter.tenantId, async (client) => {
       const tRes = await client.query(
-        `SELECT name, status, deleted_at FROM tenants WHERE id = $1 LIMIT 1;`,
+        `SELECT name, status, (to_jsonb(t)->>'deleted_at') AS deleted_at FROM tenants t WHERE t.id = $1 LIMIT 1;`,
         [inviter.tenantId],
       );
       const tRow = tRes.rows[0];
@@ -910,7 +910,7 @@ export class AuthService {
     const inviteRes = await this.db.executeAsSuperAdmin(async (client) => {
       return client.query(
         `SELECT i.id, i.tenant_id, i.email, i.role_id, i.department, i.expires_at, i.accepted_at,
-                t.status as tenant_status, t.deleted_at as tenant_deleted_at
+                t.status as tenant_status, (to_jsonb(t)->>'deleted_at') as tenant_deleted_at
          FROM invitations i
          JOIN tenants t ON t.id = i.tenant_id
          WHERE i.token_hash = $1`,
@@ -982,7 +982,7 @@ export class AuthService {
          JOIN tenants t ON t.id = tm.tenant_id
          WHERE tm.user_id = $1
            AND tm.status = 'Active'
-           AND t.deleted_at IS NULL
+           AND (to_jsonb(t)->>'deleted_at') IS NULL
            AND t.status <> 'Archived'
          ORDER BY tm.created_at ASC
          LIMIT 1`,
@@ -1003,7 +1003,7 @@ export class AuthService {
         `SELECT 1
          FROM tenant_memberships tm
          JOIN tenants t ON t.id = tm.tenant_id
-         WHERE tm.user_id = $1 AND (t.deleted_at IS NOT NULL OR t.status = 'Archived')
+         WHERE tm.user_id = $1 AND ((to_jsonb(t)->>'deleted_at') IS NOT NULL OR t.status = 'Archived')
          LIMIT 1`,
         [userId],
       );

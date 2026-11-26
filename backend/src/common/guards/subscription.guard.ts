@@ -56,7 +56,7 @@ export class SubscriptionGuard implements CanActivate {
     const subRes = await this.db.executeWithTenantContext(tenantId, async (client) => {
       return client.query(
         `SELECT ts.id, ts.status, ts.current_period_start, ts.current_period_end, ts.grace_period_end,
-                p.name as plan_name, t.status as tenant_status, t.deleted_at as tenant_deleted_at
+                p.name as plan_name, t.status as tenant_status, (to_jsonb(t)->>'deleted_at') as tenant_deleted_at
          FROM tenant_subscriptions ts
          JOIN tenants t ON ts.tenant_id = t.id
          JOIN subscription_plans p ON ts.plan_id = p.id
