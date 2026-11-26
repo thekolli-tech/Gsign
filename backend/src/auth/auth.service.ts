@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   UnauthorizedException,
   BadRequestException,
   ForbiddenException,
@@ -22,6 +23,8 @@ import * as crypto from 'crypto';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly db: DatabaseService,
     private readonly redis: RedisService,
@@ -445,11 +448,24 @@ export class AuthService {
       [regId, adminEmail, tokenHash]
     );
 
+    const appBaseUrl = (process.env.APP_URL || 'https://www.gsign.in').replace(/\/+$/, '');
+    const verifyUrl = `${appBaseUrl}/?verify_token=${rawToken}`;
+    const delivery = await this.sendEmail(
+      adminEmail,
+      'Verify Your GSIGN Company Registration',
+      `<p>Hello ${dto.admin_full_name.trim()},</p>
+       <p>Thank you for registering <strong>${dto.company_name.trim()}</strong> on GSIGN.</p>
+       <p>Click the link below to verify your work email address (expires in 24 hours):</p>
+       <p><a href="${verifyUrl}">Verify Company Email</a></p>
+       <p>If you did not initiate this registration, you can safely ignore this email.</p>`,
+    );
+
     return {
       success: true,
       message: 'Company registration received. An email verification link has been sent.',
       registration_id: regId,
-      verification_token: rawToken, // Provided in development for automated testing & instant verification
+      email_delivery: delivery,
+      ...(process.env.NODE_ENV !== 'production' ? { verification_token: rawToken } : {}),
     };
   }
 
@@ -674,30 +690,11 @@ export class AuthService {
         JSON.stringify({ userId: user.id, otpHash, attempts: 0 })
       );
 
-      // Optional email delivery via Resend API when RESEND_API_KEY is configured
-      const resendKey = process.env.RESEND_API_KEY;
-      const fromEmail = process.env.EMAIL_FROM || 'GSIGN Security <onboarding@resend.dev>';
-      if (resendKey) {
-        try {
-          await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${resendKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              from: fromEmail,
-              to: [user.email],
-              subject: 'GSIGN Password Reset Verification Code',
-              html: `<p>Hello ${user.full_name || 'User'},</p><p>Your GSIGN password reset verification code is:</p><h2 style="letter-spacing:4px;">${otp}</h2><p>This code expires in 10 minutes. If you did not request a password reset, please ignore this email.</p>`,
-            }),
-          });
-        } catch (err: any) {
-          console.warn(`Email dispatch failed for password reset OTP: ${err?.message || 'unknown'}`);
-        }
-      } else {
-        console.log(`Password reset OTP generated for ${email} (configure RESEND_API_KEY for live email delivery).`);
-      }
+      await this.sendEmail(
+        user.email,
+        'GSIGN Password Reset Verification Code',
+        `<p>Hello ${user.full_name || 'User'},</p><p>Your GSIGN password reset verification code is:</p><h2 style="letter-spacing:4px;">${otp}</h2><p>This code expires in 10 minutes. If you did not request a password reset, please ignore this email.</p>`,
+      );
 
       if (process.env.NODE_ENV !== 'production') {
         return {
@@ -821,22 +818,82 @@ export class AuthService {
     }
     const role = roleRes.rows[0];
 
+    const inviteeEmail = dto.email.trim().toLowerCase();
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
 
-    await this.db.executeWithTenantContext(inviter.tenantId, async (client) => {
+    const tenantName = await this.db.executeWithTenantContext(inviter.tenantId, async (client) => {
+      // Expire any previous unaccepted invitations for the same email in this tenant
+      await client.query(
+        `DELETE FROM invitations WHERE tenant_id = $1 AND email = $2 AND accepted_at IS NULL;`,
+        [inviter.tenantId, inviteeEmail],
+      );
       await client.query(
         `INSERT INTO invitations (tenant_id, email, role_id, department, token_hash, expires_at, created_by)
          VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days', $6);`,
-        [inviter.tenantId, dto.email.trim().toLowerCase(), role.id, dto.department.trim(), tokenHash, inviter.id]
+        [inviter.tenantId, inviteeEmail, role.id, dto.department.trim(), tokenHash, inviter.id]
       );
+      const tRes = await client.query(`SELECT name FROM tenants WHERE id = $1 LIMIT 1;`, [
+        inviter.tenantId,
+      ]);
+      return tRes.rows[0]?.name || 'your company workspace';
     });
+
+    const appBaseUrl = (process.env.APP_URL || 'https://www.gsign.in').replace(/\/+$/, '');
+    const inviteUrl = `${appBaseUrl}/?invite_token=${rawToken}`;
+    const delivery = await this.sendEmail(
+      inviteeEmail,
+      `You're invited to join ${tenantName} on GSIGN`,
+      `<p>Hello,</p>
+       <p>You have been invited to join <strong>${tenantName}</strong> on GSIGN as <strong>${role.name}</strong> (${dto.department.trim()}).</p>
+       <p>Click the link below to accept your invitation and set up your account (expires in 7 days):</p>
+       <p><a href="${inviteUrl}">Accept Workspace Invitation</a></p>`,
+    );
 
     return {
       success: true,
       message: 'Employee invitation created successfully.',
-      invitation_token: rawToken, // For development/test dispatch
+      email_delivery: delivery,
+      ...(process.env.NODE_ENV !== 'production' ? { invitation_token: rawToken } : {}),
     };
+  }
+
+  private async sendEmail(
+    to: string,
+    subject: string,
+    html: string,
+  ): Promise<{ sent: boolean; error?: string }> {
+    const resendKey = process.env.RESEND_API_KEY;
+    const fromEmail = process.env.EMAIL_FROM || 'GSIGN Security <noreply@gsign.in>';
+    if (!resendKey) {
+      return { sent: false, error: 'RESEND_API_KEY not configured' };
+    }
+
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: fromEmail,
+          to: [to],
+          subject,
+          html,
+        }),
+      });
+      if (!response.ok) {
+        const msg = `Resend returned HTTP ${response.status}`;
+        this.logger.warn(`Email delivery failed (${subject}): ${msg}`);
+        return { sent: false, error: msg };
+      }
+      return { sent: true };
+    } catch (err: any) {
+      const msg = err?.message || 'Network error';
+      this.logger.warn(`Email delivery error (${subject}): ${msg}`);
+      return { sent: false, error: msg };
+    }
   }
 
   /**

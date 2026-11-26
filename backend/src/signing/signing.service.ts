@@ -56,7 +56,7 @@ export class SigningService {
 
   private async sendEmail(to: string, subject: string, html: string): Promise<void> {
     const resendKey = process.env.RESEND_API_KEY;
-    const fromEmail = process.env.EMAIL_FROM || 'GSIGN Security <onboarding@resend.dev>';
+    const fromEmail = process.env.EMAIL_FROM || 'GSIGN Security <noreply@gsign.in>';
     if (!resendKey) {
       return;
     }
