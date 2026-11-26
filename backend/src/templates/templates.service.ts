@@ -9,7 +9,85 @@ import { CreateTemplateDto, UpdateTemplateDto } from './dto/template.dto';
 
 @Injectable()
 export class TemplatesService {
+  private schemaVerified = false;
+
   constructor(private readonly db: DatabaseService) {}
+
+  private async ensureTemplatesSchema(client: any) {
+    if (this.schemaVerified) return;
+    const check = await client.query(
+      `SELECT to_regclass('public.templates') IS NOT NULL AS has_tpl,
+              to_regclass('public.template_versions') IS NOT NULL AS has_ver`,
+    );
+    if (!check.rows[0]?.has_tpl || !check.rows[0]?.has_ver) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS templates (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          created_by UUID NOT NULL REFERENCES users(id),
+          name VARCHAR(128) NOT NULL,
+          category VARCHAR(64) NOT NULL DEFAULT 'Offer Letter',
+          department VARCHAR(64) NOT NULL DEFAULT 'HR',
+          description TEXT NOT NULL DEFAULT '',
+          status VARCHAR(32) NOT NULL DEFAULT 'Draft',
+          current_version INTEGER NOT NULL DEFAULT 1,
+          published_version INTEGER,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_templates_tenant_id ON templates(tenant_id);
+        CREATE INDEX IF NOT EXISTS idx_templates_status ON templates(status);
+
+        CREATE TABLE IF NOT EXISTS template_versions (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          template_id UUID NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+          version_number INTEGER NOT NULL,
+          status VARCHAR(32) NOT NULL DEFAULT 'Draft',
+          content TEXT NOT NULL,
+          fields_json JSONB NOT NULL DEFAULT '[]',
+          created_by UUID NOT NULL REFERENCES users(id),
+          published_by UUID REFERENCES users(id),
+          published_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          CONSTRAINT uq_template_version UNIQUE (template_id, version_number)
+        );
+        CREATE INDEX IF NOT EXISTS idx_template_versions_tenant_id ON template_versions(tenant_id);
+        CREATE INDEX IF NOT EXISTS idx_template_versions_template_id ON template_versions(template_id);
+
+        ALTER TABLE templates ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE templates FORCE ROW LEVEL SECURITY;
+        ALTER TABLE template_versions ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE template_versions FORCE ROW LEVEL SECURITY;
+
+        DROP POLICY IF EXISTS tenant_isolation_templates ON templates;
+        CREATE POLICY tenant_isolation_templates ON templates
+        FOR ALL
+        USING (
+          NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+          OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+        )
+        WITH CHECK (
+          NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+          OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+        );
+
+        DROP POLICY IF EXISTS tenant_isolation_template_versions ON template_versions;
+        CREATE POLICY tenant_isolation_template_versions ON template_versions
+        FOR ALL
+        USING (
+          NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+          OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+        )
+        WITH CHECK (
+          NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+          OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+        );
+      `);
+    }
+    this.schemaVerified = true;
+  }
 
   private mapTemplate(row: any, latestVersion: any, versions: any[] = []) {
     return {
@@ -44,6 +122,7 @@ export class TemplatesService {
     }
 
     return this.db.executeWithTenantContext(tenantId, async client => {
+      await this.ensureTemplatesSchema(client);
       const res = await client.query(
         `SELECT t.*
          FROM templates t
@@ -83,6 +162,7 @@ export class TemplatesService {
     }
 
     return this.db.executeWithTenantContext(tenantId, async client => {
+      await this.ensureTemplatesSchema(client);
       const tRes = await client.query(
         `SELECT * FROM templates WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
         [tenantId, templateId]
@@ -110,6 +190,7 @@ export class TemplatesService {
     }
 
     return this.db.executeWithTenantContext(tenantId, async client => {
+      await this.ensureTemplatesSchema(client);
       const tRes = await client.query(
         `INSERT INTO templates (tenant_id, created_by, name, category, department, description, status, current_version)
          VALUES ($1, $2, $3, $4, $5, $6, 'Draft', 1)
@@ -152,6 +233,7 @@ export class TemplatesService {
     }
 
     return this.db.executeWithTenantContext(tenantId, async client => {
+      await this.ensureTemplatesSchema(client);
       const tRes = await client.query(
         `SELECT * FROM templates WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
         [tenantId, templateId]
@@ -235,6 +317,7 @@ export class TemplatesService {
     }
 
     return this.db.executeWithTenantContext(tenantId, async client => {
+      await this.ensureTemplatesSchema(client);
       const tRes = await client.query(
         `SELECT * FROM templates WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
         [tenantId, templateId]
@@ -283,6 +366,7 @@ export class TemplatesService {
     }
 
     return this.db.executeWithTenantContext(tenantId, async client => {
+      await this.ensureTemplatesSchema(client);
       const tRes = await client.query(
         `SELECT * FROM templates WHERE tenant_id = $1 AND id = $2 LIMIT 1`,
         [tenantId, templateId]

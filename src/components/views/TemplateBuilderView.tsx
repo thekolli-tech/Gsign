@@ -37,8 +37,48 @@ const DEFAULT_FIELDS: TemplateField[] = [
   },
 ];
 
-const DEFAULT_CONTENT =
-  'This offer is made to {{recipient_name}} for a monthly salary of {{fee_amount}} for the period of {{period}}.\n1. The recipient agrees to the terms and clauses set out in Schedule A.';
+const DOCUMENT_TYPE_PRESETS: Record<string, { name: string; department: string; content: string }> = {
+  'Offer Letter': {
+    name: 'Employment Offer Letter',
+    department: 'HR',
+    content:
+      'This offer is made to {{recipient_name}} for a monthly salary of {{fee_amount}} for the period of {{period}}.\n1. The recipient agrees to the terms and clauses set out in Schedule A.',
+  },
+  NDA: {
+    name: 'Mutual Non-Disclosure Agreement (NDA)',
+    department: 'Legal',
+    content:
+      'This Non-Disclosure Agreement is entered into with {{recipient_name}} effective for a term of {{period}}.\n1. The recipient agrees to keep all proprietary and confidential information strictly confidential.',
+  },
+  'Service Agreement': {
+    name: 'Master Service Agreement',
+    department: 'Operations',
+    content:
+      'This Service Agreement is made with {{recipient_name}} for a monthly retainer fee of {{fee_amount}} for the period of {{period}}.\n1. Service scope, SLAs, and deliverables are detailed in Schedule A.',
+  },
+  'Employment Contract': {
+    name: 'Full-Time Employment Contract',
+    department: 'HR',
+    content:
+      'This Employment Contract is executed with {{recipient_name}} with a monthly salary of {{fee_amount}} for the period of {{period}}.\n1. The employee agrees to the code of conduct, confidentiality, and IP assignment terms in Schedule A.',
+  },
+  'Vendor Agreement': {
+    name: 'Vendor & Supplier Agreement',
+    department: 'Procurement',
+    content:
+      'This Vendor Agreement is entered into with {{recipient_name}} for a contract fee of {{fee_amount}} over {{period}}.\n1. Vendor deliverables, invoicing milestones, and compliance obligations are set out in Schedule A.',
+  },
+  'Consultancy Agreement': {
+    name: 'Independent Consultancy Agreement',
+    department: 'Operations',
+    content:
+      'This Consultancy Agreement is made with {{recipient_name}} for a monthly consultancy fee of {{fee_amount}} for the period of {{period}}.\n1. The consultant shall deliver advisory services as an independent contractor per Schedule A.',
+  },
+};
+
+const DOCUMENT_TYPES = Object.keys(DOCUMENT_TYPE_PRESETS);
+
+const DEFAULT_CONTENT = DOCUMENT_TYPE_PRESETS['Offer Letter'].content;
 
 export const TemplateBuilderView: React.FC = () => {
   const { templates, setTemplates, addToast } = useApp();
@@ -79,14 +119,32 @@ export const TemplateBuilderView: React.FC = () => {
   };
 
   const handleNewBlankTemplate = () => {
+    const preset = DOCUMENT_TYPE_PRESETS[category] || DOCUMENT_TYPE_PRESETS['Offer Letter'];
     setActiveTemplateId(null);
-    setName('Untitled Agreement Template');
-    setCategory('Offer Letter');
-    setDepartment('HR');
-    setContent(DEFAULT_CONTENT);
+    setName(preset.name);
+    setDepartment(preset.department);
+    setContent(preset.content);
     setPlacedFields(DEFAULT_FIELDS);
     setSelectedFieldId('field-sig');
   };
+
+  const handleDocumentTypeChange = (nextCategory: string) => {
+    setCategory(nextCategory);
+    const matching = templates.filter(t => t.category === nextCategory);
+    if (matching.length > 0) {
+      loadTemplateIntoEditor(matching[0]);
+      return;
+    }
+    const preset = DOCUMENT_TYPE_PRESETS[nextCategory] || DOCUMENT_TYPE_PRESETS['Offer Letter'];
+    setActiveTemplateId(null);
+    setName(preset.name);
+    setDepartment(preset.department);
+    setContent(preset.content);
+    setPlacedFields(DEFAULT_FIELDS);
+    setSelectedFieldId('field-sig');
+  };
+
+  const templatesForType = templates.filter(t => t.category === category);
 
   const availableFieldTypes: Array<{ type: TemplateField['type']; label: string; icon: React.ReactNode }> = [
     { type: 'Text', label: 'Text', icon: <Type size={13} /> },
@@ -252,22 +310,45 @@ export const TemplateBuilderView: React.FC = () => {
 
         {/* Template Actions */}
         <div className="flex flex-wrap items-center gap-2">
-          {templates.length > 0 && (
-            <select
-              value={activeTemplateId || ''}
-              onChange={e => {
-                const found = templates.find(t => t.id === e.target.value);
-                if (found) loadTemplateIntoEditor(found);
-              }}
-              className="px-2.5 py-1.5 rounded-lg text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 outline-none"
-            >
-              {templates.map(t => (
-                <option key={t.id} value={t.id}>
-                  {t.name} (v{t.currentVersion} · {t.status})
-                </option>
-              ))}
-            </select>
-          )}
+          <select
+            aria-label="Document Type"
+            value={category}
+            onChange={e => handleDocumentTypeChange(e.target.value)}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 outline-none focus:border-brand-600"
+          >
+            {DOCUMENT_TYPES.map(docType => (
+              <option key={docType} value={docType}>
+                {docType}
+              </option>
+            ))}
+          </select>
+
+          <select
+            aria-label="Available Templates"
+            value={activeTemplateId || ''}
+            onChange={e => {
+              if (!e.target.value) {
+                handleNewBlankTemplate();
+                return;
+              }
+              const found = templatesForType.find(t => t.id === e.target.value);
+              if (found) loadTemplateIntoEditor(found);
+            }}
+            className="px-2.5 py-1.5 rounded-lg text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 outline-none"
+          >
+            {templatesForType.length === 0 ? (
+              <option value="">Default {category} Preset</option>
+            ) : (
+              <>
+                {templatesForType.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} (v{t.currentVersion} · {t.status})
+                  </option>
+                ))}
+                <option value="">+ New {category} Draft</option>
+              </>
+            )}
+          </select>
 
           <button
             type="button"
