@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -75,10 +81,9 @@ export class StorageService implements OnModuleInit {
 
   onModuleInit() {
     if (this.isProduction && (!this.s3Client || !this.s3Bucket)) {
-      const msg =
-        'CRITICAL STORAGE MISCONFIGURATION: Private S3/R2 storage (S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY) is required in production. Local filesystem storage is disabled in production.';
-      this.logger.error(msg);
-      throw new Error(msg);
+      this.logger.error(
+        'CRITICAL STORAGE MISCONFIGURATION: Private S3/R2 storage (S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY) is not configured in production. Document storage operations are disabled until S3/R2 is configured.',
+      );
     }
   }
 
@@ -99,7 +104,7 @@ export class StorageService implements OnModuleInit {
 
   private assertWriteAllowedInCurrentEnv() {
     if (this.isProduction && (!this.s3Client || !this.s3Bucket)) {
-      throw new Error(
+      throw new InternalServerErrorException(
         'Production storage is not configured: S3/R2 credentials and bucket are required.',
       );
     }
