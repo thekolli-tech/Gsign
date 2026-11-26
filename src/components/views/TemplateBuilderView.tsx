@@ -81,7 +81,8 @@ const DOCUMENT_TYPES = Object.keys(DOCUMENT_TYPE_PRESETS);
 const DEFAULT_CONTENT = DOCUMENT_TYPE_PRESETS['Offer Letter'].content;
 
 export const TemplateBuilderView: React.FC = () => {
-  const { templates, setTemplates, addToast } = useApp();
+  const { templates, setTemplates, addToast, currentRole, setNewAgreementModalOpen } = useApp();
+  const isSuperAdmin = currentRole === 'super_admin' || currentRole === 'platform_owner';
 
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
   const [name, setName] = useState('Employment Offer Letter');
@@ -293,18 +294,29 @@ export const TemplateBuilderView: React.FC = () => {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              className="text-xl font-bold text-slate-900 dark:text-white bg-transparent border-b border-transparent hover:border-slate-300 focus:border-brand-600 outline-none"
-            />
+            {isSuperAdmin ? (
+              <input
+                type="text"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                className="text-xl font-bold text-slate-900 dark:text-white bg-transparent border-b border-transparent hover:border-slate-300 focus:border-brand-600 outline-none"
+              />
+            ) : (
+              <h2 className="text-xl font-bold text-slate-900 dark:text-white">{name}</h2>
+            )}
             <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-50 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60">
               {versionLabel}
             </span>
+            {!isSuperAdmin && (
+              <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                Read-only · Super Admin Managed
+              </span>
+            )}
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Dynamic template builder with immutable version history
+            {isSuperAdmin
+              ? 'Global template builder · Published templates reflect across all GSIGN workspaces'
+              : 'Official GSIGN templates published by Super Admin · Select a document type and use it in an agreement'}
           </p>
         </div>
 
@@ -345,18 +357,20 @@ export const TemplateBuilderView: React.FC = () => {
                     {t.name} (v{t.currentVersion} · {t.status})
                   </option>
                 ))}
-                <option value="">+ New {category} Draft</option>
+                {isSuperAdmin && <option value="">+ New {category} Draft</option>}
               </>
             )}
           </select>
 
-          <button
-            type="button"
-            onClick={handleNewBlankTemplate}
-            className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800"
-          >
-            + New
-          </button>
+          {isSuperAdmin && (
+            <button
+              type="button"
+              onClick={handleNewBlankTemplate}
+              className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800"
+            >
+              + New
+            </button>
+          )}
 
           <button
             type="button"
@@ -371,54 +385,70 @@ export const TemplateBuilderView: React.FC = () => {
             <span>{isPreviewMode ? 'Exit Preview' : 'Preview'}</span>
           </button>
 
-          <button
-            type="button"
-            disabled={saving}
-            onClick={handleSaveDraft}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50"
-          >
-            <Save size={13} />
-            <span>Save Draft</span>
-          </button>
+          {!isSuperAdmin && (
+            <button
+              type="button"
+              onClick={() => setNewAgreementModalOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
+            >
+              <CheckCircle size={13} />
+              <span>Use Template</span>
+            </button>
+          )}
 
-          {activeTemplateId && (
+          {isSuperAdmin && (
             <>
               <button
                 type="button"
                 disabled={saving}
-                onClick={handleDuplicate}
-                title="Duplicate template"
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50"
+                onClick={handleSaveDraft}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50"
               >
-                <Copy size={13} />
+                <Save size={13} />
+                <span>Save Draft</span>
               </button>
+
+              {activeTemplateId && (
+                <>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={handleDuplicate}
+                    title="Duplicate template"
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <Copy size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={handleArchive}
+                    title="Archive template"
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-rose-600 dark:text-rose-400 bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800/60 hover:bg-rose-50 dark:hover:bg-rose-950/30 disabled:opacity-50"
+                  >
+                    <Archive size={13} />
+                  </button>
+                </>
+              )}
+
               <button
                 type="button"
                 disabled={saving}
-                onClick={handleArchive}
-                title="Archive template"
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-rose-600 dark:text-rose-400 bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800/60 hover:bg-rose-50 dark:hover:bg-rose-950/30 disabled:opacity-50"
+                onClick={handlePublish}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50 transition-colors shadow-subtle"
               >
-                <Archive size={13} />
+                <CheckCircle size={13} />
+                <span>Publish version</span>
               </button>
             </>
           )}
-
-          <button
-            type="button"
-            disabled={saving}
-            onClick={handlePublish}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50 transition-colors shadow-subtle"
-          >
-            <CheckCircle size={13} />
-            <span>Publish version</span>
-          </button>
         </div>
       </div>
 
-      {/* 3-Column Layout */}
+      {/* 3-Column Layout (Super Admin) or Centered A4 Read-Only Viewer (Users) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column: FIELDS (Palette) */}
+        {/* Left Column: FIELDS (Palette - Super Admin only) */}
+        {isSuperAdmin && (
         <div className="lg:col-span-3 space-y-4">
           <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card">
             <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
@@ -443,9 +473,10 @@ export const TemplateBuilderView: React.FC = () => {
             </div>
           </div>
         </div>
+        )}
 
         {/* Center Column: Professional A4 Document Canvas */}
-        <div className="lg:col-span-6">
+        <div className={isSuperAdmin ? 'lg:col-span-6' : 'lg:col-span-10 lg:col-start-2'}>
           <div className="bg-slate-100/70 dark:bg-slate-950/60 p-3 sm:p-5 rounded-xl border border-slate-200/80 dark:border-slate-800">
             <div className="w-full max-w-[794px] mx-auto aspect-[210/297] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-sm shadow-[0_12px_36px_-12px_rgba(15,23,42,0.16)] p-7 sm:p-10 flex flex-col justify-between">
               <div className="space-y-5">
@@ -500,12 +531,12 @@ export const TemplateBuilderView: React.FC = () => {
                   <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                     Terms & Clauses
                   </div>
-                  {isPreviewMode ? (
+                  {isPreviewMode || !isSuperAdmin ? (
                     <div className="text-[13px] text-slate-700 dark:text-slate-300 leading-7 whitespace-pre-wrap font-serif">
                       {content
-                        .replace(/\{\{recipient_name\}\}/g, 'Meera Iyer')
-                        .replace(/\{\{fee_amount\}\}/g, '₹45,000')
-                        .replace(/\{\{period\}\}/g, '12 months')}
+                        .replace(/\{\{recipient_name\}\}/g, isPreviewMode ? 'Meera Iyer' : '{{recipient_name}}')
+                        .replace(/\{\{fee_amount\}\}/g, isPreviewMode ? '₹45,000' : '{{fee_amount}}')
+                        .replace(/\{\{period\}\}/g, isPreviewMode ? '12 months' : '{{period}}')}
                     </div>
                   ) : (
                     <textarea
@@ -594,7 +625,8 @@ export const TemplateBuilderView: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Column: FIELD PROPERTIES */}
+        {/* Right Column: FIELD PROPERTIES (Super Admin only) */}
+        {isSuperAdmin && (
         <div className="lg:col-span-3 space-y-4">
           <div className="p-4 sm:p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card space-y-4">
             <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
@@ -653,6 +685,7 @@ export const TemplateBuilderView: React.FC = () => {
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

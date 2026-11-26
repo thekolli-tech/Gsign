@@ -65,6 +65,7 @@ export const Sidebar: React.FC = () => {
 
   const superAdminNavItems: NavItem[] = [
     { id: 'superadmin_tenants', label: 'Tenants', icon: <Building2 size={17} />, onClick: () => setActiveView('superadmin_tenants') },
+    { id: 'templates', label: 'Templates', icon: <Layers size={17} />, onClick: () => setActiveView('templates') },
     { id: 'superadmin_pricing', label: 'Plans & Pricing', icon: <BadgePercent size={17} />, onClick: () => setActiveView('superadmin_pricing') },
     { id: 'superadmin_analytics', label: 'Usage Analytics', icon: <LineChart size={17} />, onClick: () => setActiveView('superadmin_analytics') },
     { 

@@ -14,6 +14,7 @@ import { Request } from 'express';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { SubscriptionGuard } from '../common/guards/subscription.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { SuperAdminGuard } from '../common/guards/super-admin.guard';
 import { Permissions, CurrentTenant, CurrentUser } from '../common/decorators/auth.decorators';
 import { TemplatesService } from './templates.service';
 import { CreateTemplateDto, UpdateTemplateDto } from './dto/template.dto';
@@ -27,26 +28,32 @@ export class TemplatesController {
 
   @Get()
   @Permissions('template:read')
-  @ApiOperation({ summary: 'List tenant templates' })
+  @ApiOperation({ summary: 'List global and tenant templates' })
   async list(
-    @CurrentTenant() tenantId: string,
+    @CurrentTenant() tenantId: string | null,
+    @CurrentUser() user: any,
     @Query('include_archived') includeArchived?: string
   ) {
-    return this.templatesService.listTemplates(tenantId, includeArchived === 'true');
+    return this.templatesService.listTemplates(tenantId, includeArchived === 'true', user);
   }
 
   @Get(':id')
   @Permissions('template:read')
   @ApiOperation({ summary: 'Get template details and version history' })
-  async getOne(@CurrentTenant() tenantId: string, @Param('id') id: string) {
-    return this.templatesService.getTemplate(tenantId, id);
+  async getOne(
+    @CurrentTenant() tenantId: string | null,
+    @CurrentUser() user: any,
+    @Param('id') id: string
+  ) {
+    return this.templatesService.getTemplate(tenantId, id, user);
   }
 
+  @UseGuards(SuperAdminGuard)
   @Post()
   @Permissions('template:create')
-  @ApiOperation({ summary: 'Create a new agreement template (v1 Draft)' })
+  @ApiOperation({ summary: 'Create a new global agreement template (Super Admin only)' })
   async create(
-    @CurrentTenant() tenantId: string,
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: any,
     @Body() dto: CreateTemplateDto,
     @Req() req: Request
@@ -54,11 +61,12 @@ export class TemplatesController {
     return this.templatesService.createTemplate(tenantId, user, dto, req.ip);
   }
 
+  @UseGuards(SuperAdminGuard)
   @Patch(':id')
   @Permissions('template:update')
-  @ApiOperation({ summary: 'Save template draft (creates new version if current version is Published)' })
+  @ApiOperation({ summary: 'Save global template draft (Super Admin only)' })
   async update(
-    @CurrentTenant() tenantId: string,
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: any,
     @Param('id') id: string,
     @Body() dto: UpdateTemplateDto,
@@ -67,11 +75,12 @@ export class TemplatesController {
     return this.templatesService.updateTemplate(tenantId, user, id, dto, req.ip);
   }
 
+  @UseGuards(SuperAdminGuard)
   @Post(':id/publish')
   @Permissions('template:publish')
-  @ApiOperation({ summary: 'Publish current template version (locks version immutably)' })
+  @ApiOperation({ summary: 'Publish global template version to all workspaces (Super Admin only)' })
   async publish(
-    @CurrentTenant() tenantId: string,
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: any,
     @Param('id') id: string,
     @Req() req: Request
@@ -79,11 +88,12 @@ export class TemplatesController {
     return this.templatesService.publishTemplate(tenantId, user, id, req.ip);
   }
 
+  @UseGuards(SuperAdminGuard)
   @Post(':id/duplicate')
   @Permissions('template:create')
-  @ApiOperation({ summary: 'Duplicate a template as a fresh v1 Draft' })
+  @ApiOperation({ summary: 'Duplicate a global template as a fresh v1 Draft (Super Admin only)' })
   async duplicate(
-    @CurrentTenant() tenantId: string,
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: any,
     @Param('id') id: string,
     @Req() req: Request
@@ -91,11 +101,12 @@ export class TemplatesController {
     return this.templatesService.duplicateTemplate(tenantId, user, id, req.ip);
   }
 
+  @UseGuards(SuperAdminGuard)
   @Post(':id/archive')
   @Permissions('template:update')
-  @ApiOperation({ summary: 'Archive a template' })
+  @ApiOperation({ summary: 'Archive a global template (Super Admin only)' })
   async archive(
-    @CurrentTenant() tenantId: string,
+    @CurrentTenant() tenantId: string | null,
     @CurrentUser() user: any,
     @Param('id') id: string,
     @Req() req: Request

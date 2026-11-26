@@ -441,7 +441,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (isAdminRoot) {
       setCurrentRole(session.isPlatformOwner || session.role === 'PLATFORM_OWNER' ? 'platform_owner' : 'super_admin');
-      const liveTenants = await api.getAllTenants().catch(() => []);
+      const [liveTenants, liveTemplates] = await Promise.all([
+        api.getAllTenants().catch(() => []),
+        api.getTemplates().catch(() => []),
+      ]);
+      if (Array.isArray(liveTemplates)) {
+        setTemplates(liveTemplates);
+      }
       setTenants(
         liveTenants.map((t: any) => ({
           id: t.id,
