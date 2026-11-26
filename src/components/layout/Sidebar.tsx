@@ -72,19 +72,19 @@ export const Sidebar: React.FC = () => {
       id: 'superadmin_integrations', 
       label: 'Integrations', 
       icon: <Plug size={17} />, 
-      onClick: () => addToast('Integrations', 'Provider gateways: Aadhaar eSign (NSDL/CDSL), SignDesk, DigiLocker connected.', 'info') 
+      onClick: () => setActiveView('superadmin_integrations') 
     },
     { 
       id: 'superadmin_support', 
       label: 'Support Access', 
       icon: <ShieldAlert size={17} />, 
-      onClick: () => addToast('Support Access', 'Zero unlogged support sessions active.', 'info') 
+      onClick: () => setActiveView('superadmin_support') 
     },
     { 
       id: 'superadmin_flags', 
       label: 'Feature Flags', 
       icon: <ToggleLeft size={17} />, 
-      onClick: () => addToast('Feature Flags', 'All tenant feature toggles operational.', 'info') 
+      onClick: () => setActiveView('superadmin_flags') 
     },
   ];
 

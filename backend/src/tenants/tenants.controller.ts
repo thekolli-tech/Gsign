@@ -604,4 +604,268 @@ export class TenantsController {
       deleted_at: outcome.deletedAt,
     };
   }
+
+  @UseGuards(SuperAdminGuard)
+  @Get('platform/integrations')
+  @ApiOperation({ summary: 'Live status of infrastructure and third-party eSign gateways (Super Admin only)' })
+  async getPlatformIntegrations() {
+    let dbConnected = false;
+    try {
+      await this.db.query('SELECT 1');
+      dbConnected = true;
+    } catch {
+      dbConnected = false;
+    }
+
+    let redisConnected = false;
+    try {
+      const pong = await this.redis.getClient().ping();
+      redisConnected = pong === 'PONG';
+    } catch {
+      redisConnected = false;
+    }
+
+    const r2Configured = Boolean(
+      process.env.S3_BUCKET &&
+        process.env.S3_ENDPOINT &&
+        process.env.S3_ACCESS_KEY_ID &&
+        process.env.S3_SECRET_ACCESS_KEY,
+    );
+    const resendConfigured = Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
+    const aadhaarConfigured = Boolean(process.env.AADHAAR_ESIGN_API_KEY);
+    const signdeskConfigured = Boolean(process.env.SIGNDESK_API_KEY);
+    const digilockerConfigured = Boolean(process.env.DIGILOCKER_CLIENT_ID);
+
+    return [
+      {
+        id: 'postgres',
+        name: 'PostgreSQL (Neon)',
+        category: 'Core Database',
+        connected: dbConnected,
+        status: dbConnected ? 'Connected' : 'Disconnected',
+        details: dbConnected ? 'Primary relational database with RLS active.' : 'Database connection check failed.',
+      },
+      {
+        id: 'redis',
+        name: 'Redis Session & Rate-Limit Store',
+        category: 'Cache & Sessions',
+        connected: redisConnected,
+        status: redisConnected ? 'Connected' : 'Disconnected',
+        details: redisConnected ? 'Active session revocation & login rate limiting.' : 'Redis ping failed.',
+      },
+      {
+        id: 'r2',
+        name: 'Cloudflare R2 Private Storage',
+        category: 'Document Storage',
+        connected: r2Configured,
+        status: r2Configured ? 'Connected' : 'Not Configured',
+        details: r2Configured
+          ? `Private bucket '${process.env.S3_BUCKET}' configured.`
+          : 'S3/R2 environment variables are not configured.',
+      },
+      {
+        id: 'resend',
+        name: 'Resend Transactional Email',
+        category: 'Email Delivery',
+        connected: resendConfigured,
+        status: resendConfigured ? 'Connected' : 'Not Configured',
+        details: resendConfigured
+          ? `Sender configured: ${process.env.EMAIL_FROM}`
+          : 'RESEND_API_KEY or EMAIL_FROM is missing.',
+      },
+      {
+        id: 'aadhaar_esign',
+        name: 'Aadhaar eSign (NSDL / CDSL)',
+        category: 'eSign Gateway',
+        connected: aadhaarConfigured,
+        status: aadhaarConfigured ? 'Connected' : 'Not Configured',
+        details: aadhaarConfigured
+          ? 'ASP gateway credentials configured.'
+          : 'No integration configured yet. Requires ASP credentials (AADHAAR_ESIGN_API_KEY).',
+      },
+      {
+        id: 'signdesk',
+        name: 'SignDesk Gateway',
+        category: 'eSign Gateway',
+        connected: signdeskConfigured,
+        status: signdeskConfigured ? 'Connected' : 'Not Configured',
+        details: signdeskConfigured
+          ? 'SignDesk API credentials configured.'
+          : 'No integration configured yet. Requires SIGNDESK_API_KEY.',
+      },
+      {
+        id: 'digilocker',
+        name: 'DigiLocker Verification',
+        category: 'Identity & KYC',
+        connected: digilockerConfigured,
+        status: digilockerConfigured ? 'Connected' : 'Not Configured',
+        details: digilockerConfigured
+          ? 'DigiLocker OAuth client configured.'
+          : 'No integration configured yet. Requires DIGILOCKER_CLIENT_ID.',
+      },
+    ];
+  }
+
+  private async ensureSupportAccessTable() {
+    await this.db.query(`
+      CREATE TABLE IF NOT EXISTS support_access_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        granted_by UUID NOT NULL REFERENCES users(id),
+        granted_by_email VARCHAR(255) NOT NULL,
+        reason TEXT NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'Active',
+        expires_at TIMESTAMPTZ NOT NULL,
+        revoked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+  }
+
+  @UseGuards(SuperAdminGuard)
+  @Get('platform/support-access')
+  @ApiOperation({ summary: 'List audit-logged support access sessions (Super Admin only)' })
+  async getSupportAccessSessions() {
+    await this.ensureSupportAccessTable();
+    await this.db.query(
+      `UPDATE support_access_sessions SET status = 'Expired' WHERE status = 'Active' AND expires_at <= NOW()`,
+    );
+    const res = await this.db.executeAsSuperAdmin(async (client) => {
+      return client.query(
+        `SELECT s.id, s.tenant_id, t.name AS tenant_name, s.granted_by_email,
+                s.reason, s.status, s.expires_at, s.revoked_at, s.created_at
+         FROM support_access_sessions s
+         JOIN tenants t ON t.id = s.tenant_id
+         ORDER BY s.created_at DESC
+         LIMIT 50`,
+      );
+    });
+    return res.rows;
+  }
+
+  @UseGuards(SuperAdminGuard)
+  @Post('platform/support-access')
+  @ApiOperation({ summary: 'Grant a time-boxed, audit-logged support access session (Super Admin only)' })
+  async grantSupportAccess(
+    @Body() body: { tenant_id: string; reason: string; duration_minutes?: number },
+    @CurrentUser() user: any,
+    @Req() req: Request,
+  ) {
+    if (!body?.tenant_id || !body?.reason?.trim()) {
+      throw new BadRequestException('Tenant and mandatory audit reason are required.');
+    }
+    const mins = Math.min(Math.max(Number(body.duration_minutes) || 30, 5), 240);
+    await this.ensureSupportAccessTable();
+
+    const res = await this.db.executeAsSuperAdmin(async (client) => {
+      const ins = await client.query(
+        `INSERT INTO support_access_sessions (tenant_id, granted_by, granted_by_email, reason, status, expires_at)
+         VALUES ($1::uuid, $2::uuid, $3, $4, 'Active', NOW() + ($5 || ' minutes')::interval)
+         RETURNING *`,
+        [body.tenant_id, user.id, user.email || 'owner@gsign.in', body.reason.trim(), String(mins)],
+      );
+      await client.query(
+        `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, tenant_id, reason, ip_address)
+         VALUES ($1::uuid, $2, $3, 'SUPPORT_ACCESS_GRANTED', 'tenant', $4, $5::uuid, $6, $7)`,
+        [user.id, user.email || 'owner@gsign.in', user.role || 'PLATFORM_OWNER', body.tenant_id, body.tenant_id, body.reason.trim(), req.ip || null],
+      );
+      return ins.rows[0];
+    });
+    return res;
+  }
+
+  @UseGuards(SuperAdminGuard)
+  @Post('platform/support-access/:id/revoke')
+  @ApiOperation({ summary: 'Revoke an active support access session (Super Admin only)' })
+  async revokeSupportAccess(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Req() req: Request,
+  ) {
+    await this.ensureSupportAccessTable();
+    const res = await this.db.executeAsSuperAdmin(async (client) => {
+      const upd = await client.query(
+        `UPDATE support_access_sessions
+         SET status = 'Revoked', revoked_at = NOW()
+         WHERE id = $1::uuid AND status = 'Active'
+         RETURNING *`,
+        [id],
+      );
+      if (upd.rows.length === 0) {
+        throw new NotFoundException('Active support session not found.');
+      }
+      const row = upd.rows[0];
+      await client.query(
+        `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, tenant_id, reason, ip_address)
+         VALUES ($1::uuid, $2, $3, 'SUPPORT_ACCESS_REVOKED', 'support_session', $4, $5::uuid, 'Support session revoked by Super Admin', $6)`,
+        [user.id, user.email || 'owner@gsign.in', user.role || 'PLATFORM_OWNER', id, row.tenant_id, req.ip || null],
+      );
+      return row;
+    });
+    return res;
+  }
+
+  @UseGuards(SuperAdminGuard)
+  @Get('platform/feature-flags')
+  @ApiOperation({ summary: 'List per-tenant feature flags (Super Admin only)' })
+  async getPlatformFeatureFlags() {
+    await this.db.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS feature_flags_json JSONB;`);
+    const res = await this.db.executeAsSuperAdmin(async (client) => {
+      return client.query(
+        `SELECT t.id, t.name, t.slug, t.status, t.feature_flags_json, sp.name AS plan_name
+         FROM tenants t
+         LEFT JOIN tenant_subscriptions ts ON ts.tenant_id = t.id
+         LEFT JOIN subscription_plans sp ON sp.id = ts.plan_id
+         WHERE (to_jsonb(t)->>'deleted_at') IS NULL AND t.status <> 'Archived'
+         ORDER BY t.created_at DESC`,
+      );
+    });
+    const defaults = {
+      custom_branding: true,
+      custom_domain: true,
+      templates_library: true,
+      otp_signing: true,
+      api_access: false,
+      aadhaar_esign: false,
+    };
+    return res.rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      slug: r.slug,
+      plan_name: r.plan_name || 'Starter',
+      flags: { ...defaults, ...(r.feature_flags_json || {}) },
+    }));
+  }
+
+  @UseGuards(SuperAdminGuard)
+  @Patch('platform/feature-flags/:tenantId')
+  @ApiOperation({ summary: 'Update feature flags for a tenant (Super Admin only)' })
+  async updateTenantFeatureFlags(
+    @Param('tenantId') tenantId: string,
+    @Body() body: { flags: Record<string, boolean> },
+    @CurrentUser() user: any,
+    @Req() req: Request,
+  ) {
+    await this.db.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS feature_flags_json JSONB;`);
+    const res = await this.db.executeAsSuperAdmin(async (client) => {
+      const upd = await client.query(
+        `UPDATE tenants
+         SET feature_flags_json = COALESCE(feature_flags_json, '{}'::jsonb) || $2::jsonb,
+             updated_at = NOW()
+         WHERE id = $1::uuid
+         RETURNING id, name, feature_flags_json`,
+        [tenantId, JSON.stringify(body?.flags || {})],
+      );
+      if (upd.rows.length === 0) {
+        throw new NotFoundException('Tenant not found.');
+      }
+      await client.query(
+        `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, tenant_id, reason, ip_address, metadata)
+         VALUES ($1::uuid, $2, $3, 'FEATURE_FLAGS_UPDATED', 'tenant', $4, $5::uuid, 'Updated tenant feature flags', $6, $7::jsonb)`,
+        [user.id, user.email || 'owner@gsign.in', user.role || 'PLATFORM_OWNER', tenantId, tenantId, req.ip || null, JSON.stringify(body?.flags || {})],
+      );
+      return upd.rows[0];
+    });
+    return res;
+  }
 }

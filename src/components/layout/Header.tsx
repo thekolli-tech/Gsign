@@ -79,6 +79,12 @@ export const Header: React.FC = () => {
         return { main: 'Plans & Pricing', sub: 'Genemax IT Solution · Change prices, limits and add-ons without code' };
       case 'superadmin_analytics':
         return { main: 'Usage Analytics', sub: 'Genemax IT Solution · Global document throughput & signature volumes' };
+      case 'superadmin_integrations':
+        return { main: 'Integrations', sub: 'Genemax IT Solution · Live infrastructure & eSign gateway status' };
+      case 'superadmin_support':
+        return { main: 'Support Access', sub: 'Genemax IT Solution · Audit-logged, time-boxed workspace support sessions' };
+      case 'superadmin_flags':
+        return { main: 'Feature Flags', sub: 'Genemax IT Solution · Per-tenant capability toggles persisted in PostgreSQL' };
       default:
         return { main: 'GSIGN Hub', sub: branding.logoText };
     }

@@ -16,6 +16,9 @@ import { BrandingDomainView } from './components/views/BrandingDomainView';
 import { SubscriptionView } from './components/views/SubscriptionView';
 import { SuperAdminTenantsView } from './components/views/SuperAdminTenantsView';
 import { SuperAdminPricingView } from './components/views/SuperAdminPricingView';
+import { SuperAdminIntegrationsView } from './components/views/SuperAdminIntegrationsView';
+import { SuperAdminSupportView } from './components/views/SuperAdminSupportView';
+import { SuperAdminFeatureFlagsView } from './components/views/SuperAdminFeatureFlagsView';
 import { SignInView } from './components/views/SignInView';
 import { RegisterCompanyView } from './components/views/RegisterCompanyView';
 import { PricingView } from './components/views/PricingView';
@@ -63,6 +66,12 @@ const AppContent: React.FC = () => {
         return isRootAdmin ? <SuperAdminTenantsView /> : <DashboardView />;
       case 'superadmin_pricing':
         return isRootAdmin ? <SuperAdminPricingView /> : <DashboardView />;
+      case 'superadmin_integrations':
+        return isRootAdmin ? <SuperAdminIntegrationsView /> : <DashboardView />;
+      case 'superadmin_support':
+        return isRootAdmin ? <SuperAdminSupportView /> : <DashboardView />;
+      case 'superadmin_flags':
+        return isRootAdmin ? <SuperAdminFeatureFlagsView /> : <DashboardView />;
       case 'signin':
         return <SignInView />;
       case 'register_company':

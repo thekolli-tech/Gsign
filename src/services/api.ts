@@ -692,4 +692,72 @@ export const api = {
       message: string;
     };
   },
+
+  async getPlatformIntegrations() {
+    const res = await fetch(`${API_BASE}/tenants/platform/integrations`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to load platform integrations.');
+    return data as Array<{
+      id: string;
+      name: string;
+      category: string;
+      connected: boolean;
+      status: string;
+      details: string;
+    }>;
+  },
+
+  async getSupportAccessSessions() {
+    const res = await fetch(`${API_BASE}/tenants/platform/support-access`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to load support access sessions.');
+    return data;
+  },
+
+  async grantSupportAccess(payload: { tenant_id: string; reason: string; duration_minutes: number }) {
+    const res = await fetch(`${API_BASE}/tenants/platform/support-access`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to grant support access.');
+    return data;
+  },
+
+  async revokeSupportAccess(id: string) {
+    const res = await fetch(`${API_BASE}/tenants/platform/support-access/${encodeURIComponent(id)}/revoke`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to revoke support access.');
+    return data;
+  },
+
+  async getPlatformFeatureFlags() {
+    const res = await fetch(`${API_BASE}/tenants/platform/feature-flags`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to load feature flags.');
+    return data;
+  },
+
+  async updateTenantFeatureFlags(tenantId: string, flags: Record<string, boolean>) {
+    const res = await fetch(`${API_BASE}/tenants/platform/feature-flags/${encodeURIComponent(tenantId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ flags }),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to update feature flags.');
+    return data;
+  },
 };
