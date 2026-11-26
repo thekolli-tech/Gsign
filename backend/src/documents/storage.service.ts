@@ -137,7 +137,6 @@ export class StorageService implements OnModuleInit {
           Key: key,
           Body: body,
           ContentType: contentType,
-          ACL: 'private',
           Metadata: metadata,
         }),
       );
