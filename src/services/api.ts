@@ -229,8 +229,9 @@ export const api = {
     return parseJsonSafe(res);
   },
 
-  async getAllTenants() {
-    const res = await fetch(`${API_BASE}/tenants`, { credentials: 'include' });
+  async getAllTenants(includeArchived = false) {
+    const qs = includeArchived ? '?include_archived=true' : '';
+    const res = await fetch(`${API_BASE}/tenants${qs}`, { credentials: 'include' });
     if (!res.ok) return [];
     const data = await parseJsonSafe(res);
     return Array.isArray(data) ? data : [];
@@ -636,7 +637,7 @@ export const api = {
   },
 
   async deleteTenant(tenantId: string) {
-    const res = await fetch(`${API_BASE}/tenants/${encodeURIComponent(tenantId)}`, {
+    const res = await fetch(`${API_BASE}/tenants/${encodeURIComponent(tenantId)}?confirm=true`, {
       method: 'DELETE',
       credentials: 'include',
     });

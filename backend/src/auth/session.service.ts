@@ -158,9 +158,11 @@ export class SessionService {
     const res = await this.db.executeAsSuperAdmin(async (client) => {
       return client.query(
         `SELECT s.id, s.user_id, s.tenant_id, s.expires_at, s.revoked_at,
-                u.email, u.full_name, u.is_super_admin, u.is_platform_owner, u.must_change_password, u.is_active
+                u.email, u.full_name, u.is_super_admin, u.is_platform_owner, u.must_change_password, u.is_active,
+                t.status as tenant_status, t.deleted_at as tenant_deleted_at
          FROM sessions s
          JOIN users u ON s.user_id = u.id
+         LEFT JOIN tenants t ON s.tenant_id = t.id
          WHERE s.id = $1`,
         [sessionId]
       );
@@ -169,8 +171,13 @@ export class SessionService {
     if (res.rows.length === 0) return null;
     const row = res.rows[0];
 
-    // Check revocation and expiration
-    if (row.revoked_at || new Date(row.expires_at) < new Date() || !row.is_active) {
+    // Check revocation, expiration, user active status, and archived tenant
+    if (
+      row.revoked_at ||
+      new Date(row.expires_at) < new Date() ||
+      !row.is_active ||
+      (row.tenant_id && (row.tenant_deleted_at || row.tenant_status === 'Archived'))
+    ) {
       return null;
     }
 

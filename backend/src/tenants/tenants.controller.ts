@@ -9,6 +9,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -27,8 +28,8 @@ import {
 import * as crypto from 'crypto';
 import { Request } from 'express';
 import { CryptoService } from '../auth/crypto.service';
-import { SessionService } from '../auth/session.service';
 import { DatabaseService } from '../database/database.service';
+import { RedisService } from '../redis/redis.service';
 import { AuthGuard } from '../common/guards/auth.guard';
 import { SuperAdminGuard } from '../common/guards/super-admin.guard';
 import { CurrentTenant, CurrentUser } from '../common/decorators/auth.decorators';
@@ -77,7 +78,7 @@ export class CreateTenantByOwnerDto {
 export class TenantsController {
   constructor(
     private readonly db: DatabaseService,
-    private readonly sessionService: SessionService,
+    private readonly redis: RedisService,
     private readonly cryptoService: CryptoService,
   ) {}
 
@@ -102,7 +103,7 @@ export class TenantsController {
     }
 
     const res = await this.db.query(
-      `SELECT id, name, slug, cin, gstin, contact_email, contact_phone, status, created_at, updated_at
+      `SELECT id, name, slug, cin, gstin, contact_email, contact_phone, status, deleted_at, created_at, updated_at
        FROM tenants WHERE id = $1`,
       [tenantId],
     );
@@ -110,18 +111,23 @@ export class TenantsController {
     if (res.rows.length === 0) {
       throw new NotFoundException('Tenant not found');
     }
+    const tenant = res.rows[0];
+    if (tenant.deleted_at || tenant.status === 'Archived') {
+      throw new ForbiddenException('This company workspace has been archived.');
+    }
 
-    return res.rows[0];
+    return tenant;
   }
 
   @UseGuards(SuperAdminGuard)
   @Get()
-  @ApiOperation({ summary: 'List all platform tenants (Super Admin only)' })
-  @ApiResponse({ status: 200, description: 'All tenants' })
-  async getAllTenants() {
+  @ApiOperation({ summary: 'List platform tenants (Super Admin only)' })
+  @ApiResponse({ status: 200, description: 'Platform tenants' })
+  async getAllTenants(@Query('include_archived') includeArchived?: string) {
+    const showArchived = includeArchived === 'true';
     const res = await this.db.executeAsSuperAdmin(async (client) => {
       return client.query(
-        `SELECT t.id, t.name, t.slug, t.cin, t.gstin, t.contact_email, t.status, t.created_at,
+        `SELECT t.id, t.name, t.slug, t.cin, t.gstin, t.contact_email, t.status, t.deleted_at, t.created_at,
                 COUNT(DISTINCT tm.user_id) as member_count,
                 sp.name as plan_name,
                 ts.current_period_end,
@@ -134,6 +140,7 @@ export class TenantsController {
          LEFT JOIN tenant_memberships tm ON t.id = tm.tenant_id
          LEFT JOIN tenant_subscriptions ts ON t.id = ts.tenant_id
          LEFT JOIN subscription_plans sp ON ts.plan_id = sp.id
+         ${showArchived ? '' : "WHERE t.deleted_at IS NULL AND t.status <> 'Archived'"}
          GROUP BY t.id, sp.name, ts.status, ts.current_period_end
          ORDER BY t.created_at DESC`,
       );
@@ -190,7 +197,7 @@ export class TenantsController {
       const tenantRes = await client.query(
         `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
          VALUES ($1, $2, $3, '+91 00000 00000', 'Active')
-         RETURNING id, name, slug, contact_email, status, created_at`,
+         RETURNING id, name, slug, contact_email, status, deleted_at, created_at`,
         [companyName, uniqueSlug, adminEmail],
       );
       const tenant = tenantRes.rows[0];
@@ -247,51 +254,141 @@ export class TenantsController {
 
   @UseGuards(SuperAdminGuard)
   @Delete(':id')
-  @ApiOperation({ summary: 'Remove a tenant and revoke all its active sessions (Super Admin only)' })
-  @ApiResponse({ status: 200, description: 'Tenant removed' })
+  @ApiOperation({ summary: 'Soft-delete/archive a tenant, preserve historical records, and revoke all sessions (Super Admin only)' })
+  @ApiResponse({ status: 200, description: 'Tenant archived safely' })
   async removeTenant(
     @Param('id') id: string,
+    @Query('confirm') confirmQuery: string | undefined,
+    @Body() body: { confirm?: boolean } | undefined,
     @CurrentUser() user: any,
     @Req() req: Request,
   ) {
-    const existing = await this.db.executeAsSuperAdmin(async (client) => {
+    if (confirmQuery !== 'true' && body?.confirm !== true) {
+      throw new BadRequestException(
+        'Explicit confirmation is required to archive a tenant (confirm=true).',
+      );
+    }
+
+    const outcome = await this.db.executeAsSuperAdmin(async (client) => {
       const res = await client.query(
-        `SELECT id, name, slug FROM tenants WHERE id = $1::uuid LIMIT 1`,
+        `SELECT id, name, slug, status, deleted_at
+         FROM tenants
+         WHERE id = $1::uuid
+         FOR UPDATE`,
         [id],
       );
-      return res.rows[0] || null;
-    });
+      const existing = res.rows[0];
+      if (!existing) {
+        throw new NotFoundException('Tenant not found.');
+      }
+      if (existing.slug === 'genemax-root') {
+        throw new ForbiddenException('Root platform tenant cannot be archived.');
+      }
 
-    if (!existing) {
-      throw new NotFoundException('Tenant not found.');
-    }
+      if (existing.deleted_at || existing.status === 'Archived') {
+        return {
+          alreadyArchived: true,
+          name: existing.name,
+          deletedAt: existing.deleted_at,
+          revokedSessionIds: [] as string[],
+        };
+      }
 
-    if (existing.slug === 'genemax-root') {
-      throw new ForbiddenException('Root platform tenant cannot be removed.');
-    }
+      // 1. Soft-delete / archive tenant (preserving all historical records & foreign keys)
+      const updTenant = await client.query(
+        `UPDATE tenants
+         SET status = 'Archived', deleted_at = NOW(), deleted_by = $2::uuid, updated_at = NOW()
+         WHERE id = $1::uuid
+         RETURNING deleted_at`,
+        [id, user.id],
+      );
 
-    await this.sessionService.revokeTenantSessions(id);
-
-    await this.db.executeAsSuperAdmin(async (client) => {
-      await client.query(`DELETE FROM tenants WHERE id = $1::uuid`, [id]);
+      // 2. Deactivate tenant memberships
       await client.query(
-        `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason, ip_address)
-         VALUES ($1::uuid, $2::varchar, $3::varchar, 'TENANT_REMOVED', 'tenant', $4::varchar, $5::text, $6::varchar)`,
+        `UPDATE tenant_memberships
+         SET status = 'Inactive', updated_at = NOW()
+         WHERE tenant_id = $1::uuid AND status <> 'Inactive'`,
+        [id],
+      );
+
+      // 3. Expire pending invitations
+      await client.query(
+        `UPDATE invitations
+         SET expires_at = NOW()
+         WHERE tenant_id = $1::uuid AND accepted_at IS NULL AND expires_at > NOW()`,
+        [id],
+      );
+
+      // 4. Cancel active subscriptions
+      await client.query(
+        `UPDATE tenant_subscriptions
+         SET status = 'CANCELLED', cancelled_at = COALESCE(cancelled_at, NOW()), updated_at = NOW()
+         WHERE tenant_id = $1::uuid AND status NOT IN ('CANCELLED', 'EXPIRED')`,
+        [id],
+      );
+
+      // 5. Revoke active signing requests & pending recipients
+      await client.query(
+        `UPDATE signing_requests
+         SET status = 'REVOKED', revoked_at = COALESCE(revoked_at, NOW()), updated_at = NOW()
+         WHERE tenant_id = $1::uuid AND status = 'ACTIVE'`,
+        [id],
+      );
+      await client.query(
+        `UPDATE signing_recipients
+         SET status = 'REVOKED', revoked_at = COALESCE(revoked_at, NOW()), updated_at = NOW()
+         WHERE tenant_id = $1::uuid AND status IN ('PENDING', 'OTP_VERIFIED')`,
+        [id],
+      );
+
+      // 6. Revoke all active sessions in PostgreSQL
+      const sessRes = await client.query(
+        `UPDATE sessions
+         SET revoked_at = NOW()
+         WHERE tenant_id = $1::uuid AND revoked_at IS NULL
+         RETURNING id`,
+        [id],
+      );
+
+      // 7. Record immutable TENANT_REMOVED audit event
+      await client.query(
+        `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, tenant_id, reason, ip_address, metadata)
+         VALUES ($1::uuid, $2::varchar, $3::varchar, 'TENANT_REMOVED', 'tenant', $4::varchar, $5::uuid, $6::text, $7::varchar, $8::jsonb)`,
         [
           user.id,
           user.email || 'owner@gsign.in',
           user.role || 'PLATFORM_OWNER',
           id,
-          `Removed tenant ${existing.name} (${existing.slug})`,
+          id,
+          `Soft-deleted/archived tenant ${existing.name} (${existing.slug})`,
           req.ip || null,
+          JSON.stringify({
+            revoked_sessions: sessRes.rows.length,
+            preserved_history: true,
+          }),
         ],
       );
+
+      return {
+        alreadyArchived: false,
+        name: existing.name,
+        deletedAt: updTenant.rows[0].deleted_at,
+        revokedSessionIds: sessRes.rows.map((r) => r.id as string),
+      };
     });
+
+    // Purge Redis sessions after DB transaction commits
+    if (outcome.revokedSessionIds.length > 0) {
+      await this.redis.del(outcome.revokedSessionIds.map((sid) => `session:${sid}`));
+    }
 
     return {
       success: true,
+      already_archived: outcome.alreadyArchived,
       removed_tenant_id: id,
-      name: existing.name,
+      name: outcome.name,
+      status: 'Archived',
+      deleted_at: outcome.deletedAt,
     };
   }
 }

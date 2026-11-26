@@ -14,12 +14,18 @@ CREATE TABLE IF NOT EXISTS tenants (
     contact_email VARCHAR(255) NOT NULL,
     contact_phone VARCHAR(20) NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'Active',
+    deleted_at TIMESTAMPTZ,
+    deleted_by UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_by UUID;
+
 CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants(slug);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
+CREATE INDEX IF NOT EXISTS idx_tenants_deleted_at ON tenants(deleted_at);
 
 -- 2. Users
 CREATE TABLE IF NOT EXISTS users (

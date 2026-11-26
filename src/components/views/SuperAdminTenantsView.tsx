@@ -17,18 +17,36 @@ export const SuperAdminTenantsView: React.FC = () => {
   const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [viewTab, setViewTab] = useState<'active' | 'archived'>('active');
+  const [archivedTenants, setArchivedTenants] = useState<any[]>([]);
+  const [loadingArchived, setLoadingArchived] = useState(false);
+
+  const loadArchivedTenants = async () => {
+    setLoadingArchived(true);
+    try {
+      const all = await api.getAllTenants(true);
+      setArchivedTenants(
+        all.filter((t: any) => Boolean(t.deleted_at) || t.status === 'Archived'),
+      );
+    } finally {
+      setLoadingArchived(false);
+    }
+  };
 
   const handleRemoveTenant = async (tenant: Tenant) => {
-    if (!window.confirm(`Remove tenant "${tenant.company}" and revoke all its active sessions?`)) {
+    if (!window.confirm(`Archive tenant "${tenant.company}"? Active users will be logged out immediately while all historical agreements, documents, and audit logs are preserved.`)) {
       return;
     }
     setRemovingId(tenant.id);
     try {
       await api.deleteTenant(tenant.id);
       setTenants(prev => prev.filter(t => t.id !== tenant.id));
-      addToast('Tenant Removed', `${tenant.company} has been removed and sessions revoked.`, 'success');
+      if (viewTab === 'archived') {
+        await loadArchivedTenants();
+      }
+      addToast('Tenant Archived', `${tenant.company} has been archived and all active sessions revoked.`, 'success');
     } catch (err: any) {
-      addToast('Removal Failed', err.message || 'Could not remove tenant', 'error');
+      addToast('Removal Failed', err.message || 'Could not archive tenant', 'error');
     } finally {
       setRemovingId(null);
     }
@@ -113,16 +131,93 @@ export const SuperAdminTenantsView: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={() => setModalOpen(true)}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
-        >
-          <Plus size={14} />
-          <span>+ Add tenant</span>
-        </button>
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => setViewTab('active')}
+              className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
+                viewTab === 'active'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-subtle'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Active ({tenants.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewTab('archived');
+                loadArchivedTenants();
+              }}
+              className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
+                viewTab === 'archived'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-subtle'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Archived
+            </button>
+          </div>
+
+          <button
+            onClick={() => setModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
+          >
+            <Plus size={14} />
+            <span>+ Add tenant</span>
+          </button>
+        </div>
       </div>
 
-      {/* Tenants Table matching Screenshot */}
+      {viewTab === 'archived' ? (
+        <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400 text-[11px] font-medium bg-slate-50/60 dark:bg-slate-900/40">
+                  <th className="py-3 px-6 font-medium">Company</th>
+                  <th className="py-3 px-6 font-medium">Plan</th>
+                  <th className="py-3 px-6 font-medium">Status</th>
+                  <th className="py-3 px-6 font-medium">Domain</th>
+                  <th className="py-3 px-6 font-medium">Archived At</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                {loadingArchived ? (
+                  <tr>
+                    <td colSpan={5} className="py-6 px-6 text-center text-slate-500">
+                      Loading archived tenants...
+                    </td>
+                  </tr>
+                ) : archivedTenants.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-6 px-6 text-center text-slate-500">
+                      No archived tenants.
+                    </td>
+                  </tr>
+                ) : (
+                  archivedTenants.map((t) => (
+                    <tr key={t.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
+                      <td className="py-3.5 px-6 font-semibold text-slate-900 dark:text-white">{t.name}</td>
+                      <td className="py-3.5 px-6 text-slate-700 dark:text-slate-300">{t.plan_name || '—'}</td>
+                      <td className="py-3.5 px-6">
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                          Archived
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-6 font-mono text-slate-500">{t.slug}</td>
+                      <td className="py-3.5 px-6 text-slate-500">
+                        {t.deleted_at ? new Date(t.deleted_at).toLocaleString() : '—'}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
       <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
@@ -174,6 +269,7 @@ export const SuperAdminTenantsView: React.FC = () => {
           </table>
         </div>
       </div>
+      )}
 
       {/* Add Tenant Modal */}
       {modalOpen && (

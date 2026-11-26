@@ -397,9 +397,9 @@ describe('Priority 4.1 HTTP Integration Tests (Supertest + INestApplication)', (
     });
     expect(subStatus).toBe('EXPIRED');
 
-    // 2. Platform Owner removes tenant -> sessions immediately revoked (401 on subsequent request)
+    // 2. Platform Owner archives tenant -> sessions immediately revoked (401 on subsequent request)
     await request(app.getHttpServer())
-      .delete(`/api/v1/tenants/${setup.tId}`)
+      .delete(`/api/v1/tenants/${setup.tId}?confirm=true`)
       .set('Cookie', cookiePlatformOwnerNoTenant)
       .expect(200);
 

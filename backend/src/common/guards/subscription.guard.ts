@@ -52,11 +52,13 @@ export class SubscriptionGuard implements CanActivate {
       return true;
     }
 
-    // Query active subscription for this tenant within RLS tenant context
+    // Query active subscription & tenant status within RLS tenant context
     const subRes = await this.db.executeWithTenantContext(tenantId, async (client) => {
       return client.query(
-        `SELECT ts.id, ts.status, ts.current_period_start, ts.current_period_end, ts.grace_period_end, p.name as plan_name
+        `SELECT ts.id, ts.status, ts.current_period_start, ts.current_period_end, ts.grace_period_end,
+                p.name as plan_name, t.status as tenant_status, t.deleted_at as tenant_deleted_at
          FROM tenant_subscriptions ts
+         JOIN tenants t ON ts.tenant_id = t.id
          JOIN subscription_plans p ON ts.plan_id = p.id
          WHERE ts.tenant_id = $1`,
         [tenantId]
@@ -70,6 +72,11 @@ export class SubscriptionGuard implements CanActivate {
     }
 
     const sub = subRes.rows[0];
+    if (sub.tenant_deleted_at || sub.tenant_status === 'Archived') {
+      throw new ForbiddenException(
+        'Workspace access blocked: This company workspace has been archived.'
+      );
+    }
     const now = new Date();
 
     switch (sub.status) {
