@@ -380,6 +380,96 @@ CREATE TABLE IF NOT EXISTS template_versions (
 CREATE INDEX IF NOT EXISTS idx_template_versions_tenant_id ON template_versions(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_template_versions_template_id ON template_versions(template_id);
 
+-- 23. Signing Requests
+CREATE TABLE IF NOT EXISTS signing_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agreement_id UUID NOT NULL REFERENCES agreements(id) ON DELETE CASCADE,
+    created_by UUID NOT NULL REFERENCES users(id),
+    sequential BOOLEAN NOT NULL DEFAULT TRUE,
+    status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, COMPLETED, REVOKED, EXPIRED, REJECTED
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_signing_requests_tenant_id ON signing_requests(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_signing_requests_agreement_id ON signing_requests(agreement_id);
+
+-- 24. Signing Recipients (Token hash only; raw token is never persisted)
+CREATE TABLE IF NOT EXISTS signing_recipients (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    signing_request_id UUID NOT NULL REFERENCES signing_requests(id) ON DELETE CASCADE,
+    agreement_id UUID NOT NULL REFERENCES agreements(id) ON DELETE CASCADE,
+    name VARCHAR(128) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    signing_order INTEGER NOT NULL DEFAULT 1,
+    is_required BOOLEAN NOT NULL DEFAULT TRUE,
+    sign_method VARCHAR(32) NOT NULL DEFAULT 'basic_drawn',
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    token_expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    otp_verified_at TIMESTAMPTZ,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING', -- PENDING, OTP_VERIFIED, SIGNED, REJECTED, REVOKED, EXPIRED
+    signed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_signing_recipients_tenant_id ON signing_recipients(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_signing_recipients_request_id ON signing_recipients(signing_request_id);
+CREATE INDEX IF NOT EXISTS idx_signing_recipients_token_hash ON signing_recipients(token_hash);
+
+-- 25. Signing Email OTP Attempts
+CREATE TABLE IF NOT EXISTS signing_otp_attempts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    recipient_id UUID NOT NULL REFERENCES signing_recipients(id) ON DELETE CASCADE,
+    otp_hash VARCHAR(64) NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 5,
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    ip_address VARCHAR(45),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_signing_otp_attempts_recipient_id ON signing_otp_attempts(recipient_id);
+
+-- 26. Immutable Signature Records
+CREATE TABLE IF NOT EXISTS signature_records (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agreement_id UUID NOT NULL REFERENCES agreements(id) ON DELETE CASCADE,
+    signing_request_id UUID NOT NULL REFERENCES signing_requests(id) ON DELETE CASCADE,
+    recipient_id UUID NOT NULL UNIQUE REFERENCES signing_recipients(id) ON DELETE CASCADE,
+    signature_data_url TEXT NOT NULL,
+    document_hash VARCHAR(64) NOT NULL,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    signed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_signature_records_agreement_id ON signature_records(agreement_id);
+
+-- 27. Immutable Consent Records
+CREATE TABLE IF NOT EXISTS consent_records (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    agreement_id UUID NOT NULL REFERENCES agreements(id) ON DELETE CASCADE,
+    recipient_id UUID NOT NULL UNIQUE REFERENCES signing_recipients(id) ON DELETE CASCADE,
+    consent_text TEXT NOT NULL,
+    accepted BOOLEAN NOT NULL DEFAULT TRUE,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    consented_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_consent_records_agreement_id ON consent_records(agreement_id);
+
 -- =========================================================
 -- POSTGRESQL ROW-LEVEL SECURITY (RLS) POLICIES
 -- =========================================================
@@ -396,6 +486,11 @@ ALTER TABLE agreements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agreement_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE template_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE signing_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE signing_recipients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE signing_otp_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE signature_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE consent_records ENABLE ROW LEVEL SECURITY;
 
 -- Force RLS even for table owners / application roles
 ALTER TABLE tenant_memberships FORCE ROW LEVEL SECURITY;
@@ -409,6 +504,11 @@ ALTER TABLE agreements FORCE ROW LEVEL SECURITY;
 ALTER TABLE agreement_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE templates FORCE ROW LEVEL SECURITY;
 ALTER TABLE template_versions FORCE ROW LEVEL SECURITY;
+ALTER TABLE signing_requests FORCE ROW LEVEL SECURITY;
+ALTER TABLE signing_recipients FORCE ROW LEVEL SECURITY;
+ALTER TABLE signing_otp_attempts FORCE ROW LEVEL SECURITY;
+ALTER TABLE signature_records FORCE ROW LEVEL SECURITY;
+ALTER TABLE consent_records FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if any
 DROP POLICY IF EXISTS tenant_isolation_memberships ON tenant_memberships;
@@ -422,6 +522,11 @@ DROP POLICY IF EXISTS tenant_isolation_agreements ON agreements;
 DROP POLICY IF EXISTS tenant_isolation_agreement_events ON agreement_events;
 DROP POLICY IF EXISTS tenant_isolation_templates ON templates;
 DROP POLICY IF EXISTS tenant_isolation_template_versions ON template_versions;
+DROP POLICY IF EXISTS tenant_isolation_signing_requests ON signing_requests;
+DROP POLICY IF EXISTS tenant_isolation_signing_recipients ON signing_recipients;
+DROP POLICY IF EXISTS tenant_isolation_signing_otp_attempts ON signing_otp_attempts;
+DROP POLICY IF EXISTS tenant_isolation_signature_records ON signature_records;
+DROP POLICY IF EXISTS tenant_isolation_consent_records ON consent_records;
 
 -- RLS Policy on tenant_memberships:
 -- Evaluates app.is_super_admin = 'true' OR tenant_id = app.current_tenant_id
@@ -548,6 +653,66 @@ WITH CHECK (
 
 -- RLS Policy on template_versions:
 CREATE POLICY tenant_isolation_template_versions ON template_versions
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on signing_requests:
+CREATE POLICY tenant_isolation_signing_requests ON signing_requests
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on signing_recipients:
+CREATE POLICY tenant_isolation_signing_recipients ON signing_recipients
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on signing_otp_attempts:
+CREATE POLICY tenant_isolation_signing_otp_attempts ON signing_otp_attempts
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on signature_records:
+CREATE POLICY tenant_isolation_signature_records ON signature_records
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- RLS Policy on consent_records:
+CREATE POLICY tenant_isolation_consent_records ON consent_records
 FOR ALL
 USING (
     NULLIF(current_setting('app.is_super_admin', true), '') = 'true'

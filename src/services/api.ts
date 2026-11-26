@@ -387,4 +387,98 @@ export const api = {
     if (!res.ok) throw new Error(data.message || 'Failed to archive template.');
     return data;
   },
+
+  // 8. Signing Management Engine
+  async createSigningRequest(payload: {
+    agreement_id: string;
+    sequential?: boolean;
+    expires_in_hours?: number;
+    recipients: Array<{
+      name: string;
+      email: string;
+      signing_order?: number;
+      is_required?: boolean;
+      sign_method?: string;
+    }>;
+  }) {
+    const res = await fetch(`${API_BASE}/signing/requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to create signing request.');
+    return data;
+  },
+
+  async getSigningRequestsForAgreement(agreementId: string) {
+    const res = await fetch(`${API_BASE}/signing/requests/agreement/${encodeURIComponent(agreementId)}`, {
+      credentials: 'include',
+    });
+    if (!res.ok) return { requests: [], recipients: [] };
+    return parseJsonSafe(res);
+  },
+
+  async revokeSigningRequest(requestId: string) {
+    const res = await fetch(`${API_BASE}/signing/requests/${encodeURIComponent(requestId)}/revoke`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to revoke signing request.');
+    return data;
+  },
+
+  async getSigningPortalByToken(token: string) {
+    const res = await fetch(`${API_BASE}/signing/portal/${encodeURIComponent(token)}`);
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Invalid or expired signing link.');
+    return data;
+  },
+
+  async requestSigningOtp(token: string) {
+    const res = await fetch(`${API_BASE}/signing/portal/${encodeURIComponent(token)}/otp/request`, {
+      method: 'POST',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to send verification OTP.');
+    return data;
+  },
+
+  async verifySigningOtp(token: string, otp: string) {
+    const res = await fetch(`${API_BASE}/signing/portal/${encodeURIComponent(token)}/otp/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ otp }),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Invalid OTP code.');
+    return data;
+  },
+
+  async submitSigningSignature(
+    token: string,
+    payload: { signature_data_url: string; consent_accepted: boolean; consent_text: string }
+  ) {
+    const res = await fetch(`${API_BASE}/signing/portal/${encodeURIComponent(token)}/sign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to submit signature.');
+    return data;
+  },
+
+  async rejectSigningRequest(token: string, reason: string) {
+    const res = await fetch(`${API_BASE}/signing/portal/${encodeURIComponent(token)}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to reject agreement.');
+    return data;
+  },
 };

@@ -4,6 +4,7 @@ export type UserRole = 'platform_owner' | 'super_admin' | 'company_admin' | 'com
 
 export type AgreementStatus = 
   | 'Completed' 
+  | 'Partially signed'
   | 'Awaiting OTP' 
   | 'Awaiting signature' 
   | 'Expired' 

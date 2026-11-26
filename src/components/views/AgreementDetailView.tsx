@@ -8,15 +8,18 @@ import {
   Lock
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { api } from '../../services/api';
 import { jsPDF } from 'jspdf';
 
 export const AgreementDetailView: React.FC = () => {
   const { 
     selectedAgreementId, 
     agreements, 
+    setAgreements,
     setActiveView, 
     setRecipientModalOpen, 
     setSigningAgreement,
+    setSigningToken,
     transitionAgreementStatus,
     deleteDraftAgreement,
     currentUser,
@@ -26,6 +29,7 @@ export const AgreementDetailView: React.FC = () => {
 
   const [verifyingHash, setVerifyingHash] = useState(false);
   const [hashVerified, setHashVerified] = useState(false);
+  const [creatingSigningLink, setCreatingSigningLink] = useState(false);
 
   const agreement = agreements.find(a => a.id === selectedAgreementId) || agreements[0];
 
@@ -159,8 +163,42 @@ export const AgreementDetailView: React.FC = () => {
     }, 800);
   };
 
-  const copyShareLink = () => {
-    navigator.clipboard.writeText(`https://${branding.customDomain}/sign/${agreement.id}?token=k7f9a2`);
+  const issueSigningLink = async (): Promise<{ token: string; url: string } | null> => {
+    setCreatingSigningLink(true);
+    try {
+      const res = await api.createSigningRequest({
+        agreement_id: (agreement as any).uuid || agreement.id,
+        sequential: true,
+        recipients: [
+          {
+            name: agreement.recipientName,
+            email: agreement.recipientEmail,
+            signing_order: 1,
+            is_required: true,
+            sign_method: agreement.signMethod || 'basic_drawn',
+          },
+        ],
+      });
+      const rec = res.recipients?.[0];
+      const token = rec?.signing_token;
+      const url = `${window.location.origin}/?token=${token}`;
+      const refreshed = await api.getAgreements();
+      if (Array.isArray(refreshed)) {
+        setAgreements(refreshed);
+      }
+      return token ? { token, url } : null;
+    } catch (err: any) {
+      addToast('Signing Error', err.message || 'Could not create signing link', 'error');
+      return null;
+    } finally {
+      setCreatingSigningLink(false);
+    }
+  };
+
+  const copyShareLink = async () => {
+    const issued = await issueSigningLink();
+    if (!issued) return;
+    await navigator.clipboard.writeText(issued.url);
     addToast('Link Copied', 'Secure recipient signing portal link copied to clipboard', 'info');
   };
 
@@ -209,15 +247,17 @@ export const AgreementDetailView: React.FC = () => {
           {agreement.status === 'Draft' && (
             <>
               <button
-                onClick={() =>
-                  transitionAgreementStatus(
-                    agreement.id,
-                    agreement.signMethod === 'otp_verified' ? 'Awaiting OTP' : 'Awaiting signature'
-                  )
-                }
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
+                disabled={creatingSigningLink}
+                onClick={async () => {
+                  const issued = await issueSigningLink();
+                  if (issued) {
+                    await navigator.clipboard.writeText(issued.url);
+                    addToast('Sent for Signing', 'Signing request created and secure link copied.', 'success');
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-60 transition-colors shadow-subtle"
               >
-                <span>Send for Signing</span>
+                <span>{creatingSigningLink ? 'Sending...' : 'Send for Signing'}</span>
               </button>
               <button
                 onClick={async () => {
@@ -231,17 +271,22 @@ export const AgreementDetailView: React.FC = () => {
             </>
           )}
 
-          {(agreement.status === 'Awaiting OTP' || agreement.status === 'Awaiting signature') && (
+          {(agreement.status === 'Awaiting OTP' || agreement.status === 'Awaiting signature' || agreement.status === 'Partially signed') && (
             <>
               <button
-                onClick={() => {
-                  setSigningAgreement(agreement);
-                  setRecipientModalOpen(true);
+                disabled={creatingSigningLink}
+                onClick={async () => {
+                  const issued = await issueSigningLink();
+                  if (issued) {
+                    setSigningAgreement(agreement);
+                    setSigningToken(issued.token);
+                    setRecipientModalOpen(true);
+                  }
                 }}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-60 transition-colors shadow-subtle"
               >
                 <PenTool size={13} />
-                <span>Sign Document</span>
+                <span>{creatingSigningLink ? 'Opening...' : 'Sign Document'}</span>
               </button>
               <button
                 onClick={() => transitionAgreementStatus(agreement.id, 'Cancelled', 'Cancelled by administrator')}

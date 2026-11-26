@@ -11,6 +11,7 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { PaymentsModule } from './payments/payments.module';
 import { AgreementsModule } from './agreements/agreements.module';
 import { TemplatesModule } from './templates/templates.module';
+import { SigningModule } from './signing/signing.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { TemplatesModule } from './templates/templates.module';
     PaymentsModule,
     AgreementsModule,
     TemplatesModule,
+    SigningModule,
   ],
 })
 export class AppModule {}

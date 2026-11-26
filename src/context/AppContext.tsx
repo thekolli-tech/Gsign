@@ -88,6 +88,8 @@ interface AppContextType {
   setRecipientModalOpen: (open: boolean) => void;
   signingAgreement: Agreement | null;
   setSigningAgreement: (ag: Agreement | null) => void;
+  signingToken: string | null;
+  setSigningToken: (token: string | null) => void;
   // New Agreement Modal
   newAgreementModalOpen: boolean;
   setNewAgreementModalOpen: (open: boolean) => void;
@@ -385,6 +387,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [branding, setBranding] = useState<BrandingSettings>(initialBranding);
   const [recipientModalOpen, setRecipientModalOpen] = useState(false);
   const [signingAgreement, setSigningAgreement] = useState<Agreement | null>(null);
+  const [signingToken, setSigningToken] = useState<string | null>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('token');
+    } catch {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    if (signingToken) {
+      setRecipientModalOpen(true);
+    }
+  }, [signingToken]);
   const [newAgreementModalOpen, setNewAgreementModalOpen] = useState(false);
   const [acknowledgeModalOpen, setAcknowledgeModalOpen] = useState(false);
   const [enable3D, setEnable3D] = useState(true);
@@ -681,6 +696,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setRecipientModalOpen,
         signingAgreement,
         setSigningAgreement,
+        signingToken,
+        setSigningToken,
         newAgreementModalOpen,
         setNewAgreementModalOpen,
         acknowledgeModalOpen,
