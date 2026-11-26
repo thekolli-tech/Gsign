@@ -339,4 +339,77 @@ describe('Priority 4.1 HTTP Integration Tests (Supertest + INestApplication)', (
       .expect(200);
     expect(dupRetryRes.body.already_finalized).toBe(true);
   });
+
+  it('Automatically denies access on expired subscription and revokes sessions when a tenant is removed', async () => {
+    // Create temporary tenant + user + subscription
+    const ts = Date.now();
+    const setup = await db.executeAsSuperAdmin(async (client) => {
+      const tRes = await client.query(
+        `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
+         VALUES ($1, $2, $3, '+91 90000 00001', 'Active') RETURNING id`,
+        [`Temp Expiry Corp ${ts}`, `temp-exp-${ts}`, `temp-${ts}@example.com`],
+      );
+      const tId = tRes.rows[0].id;
+
+      const uRes = await client.query(
+        `INSERT INTO users (email, password_hash, full_name, is_active, email_verified_at)
+         VALUES ($1, 'hash', 'Temp Admin', true, NOW()) RETURNING id`,
+        [`temp-admin-${ts}@example.com`],
+      );
+      const uId = uRes.rows[0].id;
+
+      const rRes = await client.query(`SELECT id FROM roles WHERE name = 'Company Admin' LIMIT 1`);
+      await client.query(
+        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'Executive', 'Active')`,
+        [tId, uId, rRes.rows[0].id],
+      );
+
+      const pRes = await client.query(`SELECT id FROM subscription_plans WHERE slug = 'starter' LIMIT 1`);
+      await client.query(
+        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
+         VALUES ($1::uuid, $2::uuid, 'monthly', 'ACTIVE', NOW() - INTERVAL '32 days', NOW() - INTERVAL '1 hour')`,
+        [tId, pRes.rows[0].id],
+      );
+      return { tId, uId };
+    });
+
+    const tempSession = await sessionService.createSession(
+      setup.uId,
+      setup.tId,
+      '127.0.0.1',
+      'Supertest',
+    );
+    const tempCookie = `gsign_session=${tempSession.sessionId}`;
+
+    // 1. Expired subscription automatically denied (403) and DB status updated to EXPIRED
+    await request(app.getHttpServer())
+      .get('/api/v1/agreements')
+      .set('Cookie', tempCookie)
+      .expect(403);
+
+    const subStatus = await db.executeAsSuperAdmin(async (client) => {
+      const r = await client.query(
+        `SELECT status FROM tenant_subscriptions WHERE tenant_id = $1::uuid`,
+        [setup.tId],
+      );
+      return r.rows[0]?.status;
+    });
+    expect(subStatus).toBe('EXPIRED');
+
+    // 2. Platform Owner removes tenant -> sessions immediately revoked (401 on subsequent request)
+    await request(app.getHttpServer())
+      .delete(`/api/v1/tenants/${setup.tId}`)
+      .set('Cookie', cookiePlatformOwnerNoTenant)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/agreements')
+      .set('Cookie', tempCookie)
+      .expect(401);
+
+    await db.executeAsSuperAdmin(async (client) => {
+      await client.query(`DELETE FROM users WHERE id = $1::uuid`, [setup.uId]);
+    });
+  });
 });

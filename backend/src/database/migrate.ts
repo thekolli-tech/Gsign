@@ -3,7 +3,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export async function runMigrations(connectionString?: string) {
-  const dbUrl = connectionString || process.env.DATABASE_URL || 'postgres://postgres:gsign_dev_password@127.0.0.1:5432/gsign_db';
+  const dbUrl =
+    connectionString ||
+    process.env.DIRECT_DATABASE_URL ||
+    process.env.DATABASE_URL ||
+    'postgres://postgres:gsign_dev_password@127.0.0.1:5432/gsign_db';
   console.log('Running GSIGN migrations on:', dbUrl.replace(/:[^:@]+@/, ':****@'));
 
   const client = new Client({ connectionString: dbUrl });
@@ -38,6 +42,15 @@ export async function runMigrations(connectionString?: string) {
     const policies = await client.query(rlsCheckQuery);
     console.log('Active RLS Policies:');
     policies.rows.forEach(p => console.log(` - [${p.tablename}] Policy: ${p.policyname}`));
+
+    const forceRlsRes = await client.query(`
+      SELECT relname, relrowsecurity, relforcerowsecurity
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity = true
+      ORDER BY relname;
+    `);
+    console.log('FORCE RLS Verified Tables:', forceRlsRes.rows.filter(r => r.relforcerowsecurity).map(r => r.relname).join(', '));
 
     return true;
   } catch (error) {
