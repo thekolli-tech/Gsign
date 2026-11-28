@@ -1445,4 +1445,61 @@ export class SigningService {
       };
     });
   }
+
+  async downloadRecipientDocument(
+    rawToken: string,
+    kind: 'signed_pdf' | 'certificate' = 'signed_pdf',
+    ip?: string,
+    userAgent?: string,
+  ) {
+    const tokenHash = this.hashValue(rawToken || '');
+    await this.enforceRateLimit(`rate:signing:download:ip:${ip || 'unknown'}`, 30, 60);
+    await this.enforceRateLimit(`rate:signing:download:tok:${tokenHash}`, 20, 60);
+    const ctx = await this.resolveRecipientContextByToken(rawToken);
+
+    const recipientInfo = await this.db.executeWithTenantContext(ctx.tenantId, async (client) => {
+      const recRes = await client.query(
+        `SELECT id, email, token_expires_at, revoked_at, status
+         FROM signing_recipients
+         WHERE id = $1::uuid`,
+        [ctx.recipientId],
+      );
+      const reqRes = await client.query(
+        `SELECT id, status, expires_at, revoked_at
+         FROM signing_requests
+         WHERE id = $1::uuid`,
+        [ctx.signingRequestId],
+      );
+      const recipient = recRes.rows[0];
+      const request = reqRes.rows[0];
+      if (!recipient || !request) {
+        throw new NotFoundException('Signing link is no longer valid.');
+      }
+      if (recipient.revoked_at || request.revoked_at || request.status === 'REVOKED') {
+        throw new ForbiddenException('This signing link has been revoked.');
+      }
+      const now = Date.now();
+      if (
+        (recipient.token_expires_at && new Date(recipient.token_expires_at).getTime() < now) ||
+        (request.expires_at && new Date(request.expires_at).getTime() < now)
+      ) {
+        throw new BadRequestException('This signing link has expired.');
+      }
+      return { email: recipient.email as string };
+    });
+
+    if (!this.documentsService) {
+      throw new BadRequestException('Document service is unavailable.');
+    }
+
+    return this.documentsService.prepareRecipientDocumentDownload({
+      tenantId: ctx.tenantId,
+      agreementId: ctx.agreementId,
+      signingRequestId: ctx.signingRequestId,
+      recipientEmail: recipientInfo.email,
+      kind,
+      ip,
+      userAgent,
+    });
+  }
 }

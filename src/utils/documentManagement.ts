@@ -42,7 +42,9 @@ export type DocumentSortBy =
   | 'updated_desc'
   | 'updated_asc'
   | 'signed_desc'
-  | 'signed_asc';
+  | 'signed_asc'
+  | 'name_asc'
+  | 'name_desc';
 
 export interface DocumentFilterOptions {
   search?: string;
@@ -238,6 +240,12 @@ export function filterAndSortDocuments(
   });
 
   const sorted = [...filtered].sort((a, b) => {
+    if (sortBy === 'name_asc') {
+      return a.doc.title.localeCompare(b.doc.title);
+    }
+    if (sortBy === 'name_desc') {
+      return b.doc.title.localeCompare(a.doc.title);
+    }
     const pickTime = (row: ManagedDocumentRow): number => {
       if (sortBy.startsWith('created')) return parseDateMs(row.createdAt) ?? 0;
       if (sortBy.startsWith('signed')) return parseDateMs(row.signedAt) ?? 0;

@@ -35,7 +35,6 @@ import {
   validateRecipientFieldResponses,
   getCompletionBannerState,
 } from '../../utils/recipientSigning';
-import { jsPDF } from 'jspdf';
 
 export const RecipientPortalModal: React.FC = () => {
   const {
@@ -77,6 +76,14 @@ export const RecipientPortalModal: React.FC = () => {
   const [biometricToken, setBiometricToken] = useState<string | null>(null);
   const [biometricVerifying, setBiometricVerifying] = useState(false);
   const [biometricError, setBiometricError] = useState<string | null>(null);
+  const [downloadingKind, setDownloadingKind] = useState<'signed_pdf' | 'certificate' | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadIntegrityInfo, setDownloadIntegrityInfo] = useState<{
+    fileName: string;
+    sha256Hash: string;
+    documentStatus: string;
+    integrityVerified: boolean;
+  } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -419,53 +426,27 @@ export const RecipientPortalModal: React.FC = () => {
   const portalStatus = portalData?.portal_status;
   const brandTitle = portalData?.tenant?.name || branding.logoText;
 
-  const handleDownloadSignedPDF = () => {
-    if (!activeAgreement) return;
+  const handleDownloadSignedPDF = async (kind: 'signed_pdf' | 'certificate' = 'signed_pdf') => {
+    if (!signingToken) {
+      setDownloadError('An active server signing link is required to download authoritative documents.');
+      return;
+    }
+    setDownloadingKind(kind);
+    setDownloadError(null);
     try {
-      const doc = new jsPDF();
-      doc.setFillColor(91, 19, 236);
-      doc.rect(0, 0, 210, 14, 'F');
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(13);
-      doc.setFont('helvetica', 'bold');
-      doc.text(brandTitle, 20, 9.5);
-
-      doc.setTextColor(30, 41, 59);
-      doc.setFontSize(16);
-      doc.text('SIGNED AGREEMENT', 20, 32);
-
-      doc.setFontSize(9.5);
-      doc.setTextColor(100, 116, 139);
-      const refId = activeAgreement.agreement_number || activeAgreement.id;
-      doc.text(`Reference: ${refId}   |   Date: ${new Date().toLocaleDateString()}`, 20, 40);
-
-      doc.setFontSize(10.5);
-      doc.setTextColor(15, 23, 42);
-      doc.text(doc.splitTextToSize(activeAgreement.content || '', 170), 20, 56);
-
-      doc.setDrawColor(203, 213, 225);
-      doc.setFillColor(248, 250, 252);
-      doc.roundedRect(20, 95, 170, 38, 2, 2, 'FD');
-
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(91, 19, 236);
-      doc.text('VERIFIED ELECTRONIC SIGNATURE', 25, 104);
-
-      doc.setFont('helvetica', 'normal');
-      doc.setTextColor(71, 85, 105);
-      doc.setFontSize(9);
-      doc.text(
-        `Signer: ${activeRecipient?.name || activeAgreement.recipientName} (${activeRecipient?.email || activeAgreement.recipientEmail || ''})`,
-        25,
-        112,
+      const info = await api.downloadSigningPortalDocument(signingToken, kind);
+      setDownloadIntegrityInfo(info);
+      addToast(
+        kind === 'certificate' ? 'Certificate Downloaded' : 'Server PDF Downloaded',
+        `${info.fileName} (${info.documentStatus}) verified and saved.`,
+        'success',
       );
-      doc.text(`Authentication: Email OTP Verified`, 25, 118);
-      doc.text(`SHA-256 Hash: ${activeAgreement.document_hash || activeAgreement.documentHash || 'Verified'}`, 25, 124);
-
-      doc.save(`Signed_${refId}.pdf`);
-      addToast('Download Complete', 'Signed agreement saved to your device', 'success');
-    } catch (e) {
-      console.error(e);
+    } catch (err: any) {
+      const msg = err.message || 'Could not download server-signed PDF.';
+      setDownloadError(msg);
+      addToast('Download Failed', msg, 'error');
+    } finally {
+      setDownloadingKind(null);
     }
   };
 
@@ -1074,14 +1055,62 @@ export const RecipientPortalModal: React.FC = () => {
                     </div>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={handleDownloadSignedPDF}
-                    className="w-full py-2.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle flex items-center justify-center gap-1.5"
-                  >
-                    <Download size={13} />
-                    <span>{completion.isCompleted ? 'Download Signed PDF' : 'Download Signed Copy'}</span>
-                  </button>
+                  {downloadError && (
+                    <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-[11px] text-rose-700 dark:text-rose-300">
+                      {downloadError}
+                    </div>
+                  )}
+
+                  {downloadIntegrityInfo && (
+                    <div className="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 text-[11px] text-emerald-800 dark:text-emerald-200 space-y-0.5 text-left">
+                      <div className="font-semibold">
+                        {downloadIntegrityInfo.integrityVerified
+                          ? 'Server SHA-256 Integrity Verified'
+                          : 'Downloaded Server Copy'}
+                        {' · '}
+                        {downloadIntegrityInfo.documentStatus}
+                      </div>
+                      {downloadIntegrityInfo.sha256Hash && (
+                        <div className="font-mono text-[10px] break-all">
+                          SHA-256: {downloadIntegrityInfo.sha256Hash}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      disabled={downloadingKind !== null}
+                      onClick={() => void handleDownloadSignedPDF('signed_pdf')}
+                      className="w-full py-2.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-60 transition-colors shadow-subtle flex items-center justify-center gap-1.5"
+                    >
+                      <Download size={13} />
+                      <span>
+                        {downloadingKind === 'signed_pdf'
+                          ? 'Preparing Server PDF...'
+                          : completion.isCompleted
+                            ? 'Download Signed PDF'
+                            : 'Download Partially Signed PDF'}
+                      </span>
+                    </button>
+
+                    {completion.isCompleted && (
+                      <button
+                        type="button"
+                        disabled={downloadingKind !== null}
+                        onClick={() => void handleDownloadSignedPDF('certificate')}
+                        className="w-full py-2 rounded-lg font-medium text-xs text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-1.5"
+                      >
+                        <Download size={13} />
+                        <span>
+                          {downloadingKind === 'certificate'
+                            ? 'Downloading Certificate...'
+                            : 'Download Completion Certificate'}
+                        </span>
+                      </button>
+                    )}
+                  </div>
 
                   <div className="text-[11px] font-mono text-slate-400">
                     {activeAgreement?.agreement_number || activeAgreement?.id} · Status: {completion.status}

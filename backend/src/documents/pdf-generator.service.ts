@@ -507,20 +507,31 @@ export class PdfGeneratorService {
         { x: 48, y, size: 8.5, font: regularFont, color: rgb(0.28, 0.33, 0.41) },
       );
       y -= 13;
-      page.drawText(`  Consent Recorded: ${consent?.consented_at ? new Date(consent.consented_at).toISOString() : 'N/A'}`, {
-        x: 48,
-        y,
-        size: 8.5,
-        font: regularFont,
-        color: rgb(0.28, 0.33, 0.41),
-      });
+      page.drawText(
+        `  Consent Recorded: ${consent?.consented_at ? new Date(consent.consented_at).toISOString() : 'N/A'} | Method: ${sig?.signing_method || rec.signing_method || 'N/A'}`,
+        {
+          x: 48,
+          y,
+          size: 8.5,
+          font: regularFont,
+          color: rgb(0.28, 0.33, 0.41),
+        },
+      );
       y -= 18;
     }
 
-    page.drawText(
-      'This certificate verifies that all required parties completed email OTP verification, accepted electronic signature consent, and executed the agreement within GSIGN.',
-      { x: 48, y: Math.max(y - 10, 40), size: 8, font: regularFont, color: rgb(0.39, 0.45, 0.55) },
-    );
+    const footerStatement =
+      completionStatus === 'Fully Signed'
+        ? 'This certificate summarizes recorded GSIGN verification, consent, and signing events for a fully signed agreement. It does not independently establish legal validity.'
+        : `Status: ${completionStatus}. This certificate summarizes recorded GSIGN events only and does not independently establish legal validity.`;
+
+    page.drawText(footerStatement, {
+      x: 48,
+      y: Math.max(y - 10, 40),
+      size: 8,
+      font: regularFont,
+      color: rgb(0.39, 0.45, 0.55),
+    });
 
     const bytes = await pdfDoc.save();
     return Buffer.from(bytes);

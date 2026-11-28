@@ -141,6 +141,47 @@ export async function runSeeds(connectionString?: string) {
       console.log('Platform Owner already exists. Preserving password and security state for:', ownerEmail);
     }
 
+    // 3.1 Bootstrap Developer / Genemax IT Solution Team Super Admin
+    const teamAdminEmail = isProduction
+      ? process.env.GSIGN_TEAM_ADMIN_EMAIL
+      : process.env.GSIGN_TEAM_ADMIN_EMAIL || 'genemaxit@gmail.com';
+    const teamAdminPassword = isProduction
+      ? process.env.GSIGN_TEAM_ADMIN_PASSWORD
+      : process.env.GSIGN_TEAM_ADMIN_PASSWORD || 'Gmax@2026';
+
+    if (teamAdminEmail && teamAdminEmail !== ownerEmail) {
+      const existingTeamAdmin = await client.query(
+        'SELECT id FROM users WHERE email = $1',
+        [teamAdminEmail],
+      );
+      if (existingTeamAdmin.rows.length === 0) {
+        if (teamAdminPassword) {
+          const teamAdminHash = await argon2.hash(teamAdminPassword);
+          const teamAdminRes = await client.query(
+            `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
+             VALUES ($1, $2, 'Genemax IT Solution Admin', '+91 99000 00001', true, true, false, true, NOW())
+             RETURNING id;`,
+            [teamAdminEmail, teamAdminHash],
+          );
+          const teamAdminId = teamAdminRes.rows[0].id;
+          console.log('Bootstrapped Team Super Admin:', teamAdminEmail, `(${teamAdminId})`);
+
+          await client.query(
+            `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason, metadata)
+             VALUES ($1, $2, 'PLATFORM_OWNER', 'ADMIN_BOOTSTRAP', 'USER', $3, 'Default developer & Genemax IT Solution team super admin provisioning', '{"provider":"bootstrap"}');`,
+            [teamAdminId, teamAdminEmail, teamAdminId],
+          );
+        }
+      } else {
+        const teamAdminId = existingTeamAdmin.rows[0].id;
+        await client.query(
+          `UPDATE users SET is_super_admin = true, is_platform_owner = true WHERE id = $1;`,
+          [teamAdminId],
+        );
+        console.log('Team Super Admin already exists. Preserving password and security state for:', teamAdminEmail);
+      }
+    }
+
     // 3.2 Seed Paid Subscription Plans (NO FREE TRIAL)
     const plans = [
       {

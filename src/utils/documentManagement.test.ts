@@ -192,6 +192,14 @@ describe('documentManagement helpers', () => {
       filterAndSortDocuments(rows, { sortBy: 'signed_desc' }).items[0].doc.id,
       'doc-1',
     );
+    assert.deepEqual(
+      filterAndSortDocuments(rows, { sortBy: 'name_asc' }).items.map((r) => r.doc.id),
+      ['doc-1', 'doc-2', 'doc-3'],
+    );
+    assert.deepEqual(
+      filterAndSortDocuments(rows, { sortBy: 'name_desc' }).items.map((r) => r.doc.id),
+      ['doc-3', 'doc-2', 'doc-1'],
+    );
 
     const page1 = filterAndSortDocuments(rows, { sortBy: 'created_asc', page: 1, pageSize: 2 });
     const page2 = filterAndSortDocuments(rows, { sortBy: 'created_asc', page: 2, pageSize: 2 });

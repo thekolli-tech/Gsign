@@ -7,10 +7,12 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import {
   CurrentTenant,
   CurrentUser,
@@ -214,5 +216,32 @@ export class SigningController {
     @Req() req: Request,
   ) {
     return this.signingService.rejectSigning(token, dto, req.ip);
+  }
+
+  @Public()
+  @SkipSubscription()
+  @Get('portal/:token/download')
+  async downloadDocument(
+    @Param('token') token: string,
+    @Query('kind') kind: string | undefined,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const requestedKind = kind === 'certificate' ? 'certificate' : 'signed_pdf';
+    const result = await this.signingService.downloadRecipientDocument(
+      token,
+      requestedKind,
+      req.ip,
+      req.headers['user-agent'],
+    );
+    res.setHeader('Content-Type', result.mimeType);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.fileName.replace(/"/g, '')}"`,
+    );
+    res.setHeader('X-Document-SHA256', result.sha256Hash);
+    res.setHeader('X-Document-Status', result.documentStatus);
+    res.setHeader('X-Integrity-Verified', String(result.integrityVerified));
+    return res.send(result.buffer);
   }
 }

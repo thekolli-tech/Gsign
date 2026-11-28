@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -572,6 +573,9 @@ export class DocumentsService {
         recipients: lockResult.recipients,
         signatures: lockResult.signatures,
         consents: lockResult.consents,
+        fields: Array.isArray(lockResult.agreement.fields)
+          ? lockResult.agreement.fields
+          : undefined,
       });
       const finalPdfSha256 = this.sha256(signedPdfBuffer);
       const signedFileName = `${lockResult.agreement.agreement_number}_signed_final.pdf`;
@@ -952,6 +956,131 @@ export class DocumentsService {
     });
   }
 
+  private classifyAuditCategory(source: string, actionOrType: string): string {
+    const normalized = (actionOrType || '').toLowerCase();
+    if (source === 'document_access' || normalized.includes('pdf') || normalized.includes('download') || normalized.includes('upload') || normalized.includes('verify_integrity')) {
+      return 'Document events';
+    }
+    if (normalized.includes('otp') || normalized.includes('auth') || normalized.includes('login') || normalized.includes('mfa') || normalized.includes('biometric')) {
+      return 'Authentication events';
+    }
+    if (normalized.includes('sign') || normalized.includes('consent') || normalized.includes('thumb')) {
+      return 'Signing events';
+    }
+    if (source === 'admin_log' || normalized.includes('role') || normalized.includes('team') || normalized.includes('tenant') || normalized.includes('cancel')) {
+      return 'Administrative events';
+    }
+    return 'User activity';
+  }
+
+  async getTenantAuditTrail(
+    tenantId: string,
+    filters?: { category?: string; search?: string; agreementId?: string },
+  ) {
+    return this.db.executeWithTenantContext(tenantId, async (client) => {
+      const [eventsRes, docLogsRes, adminLogsRes] = await Promise.all([
+        client.query(
+          `SELECT ae.id, ae.agreement_id, a.agreement_number, a.document_hash, a.sign_method,
+                  ae.event_type, ae.title, ae.description, ae.ip_address, ae.device_info, ae.created_at
+           FROM agreement_events ae
+           INNER JOIN agreements a ON a.id = ae.agreement_id
+           WHERE ae.tenant_id = $1::uuid
+           ORDER BY ae.created_at DESC
+           LIMIT 250`,
+          [tenantId],
+        ),
+        client.query(
+          `SELECT dal.id, dal.document_id, dal.action, dal.actor_email, dal.ip_address, dal.created_at,
+                  d.title AS document_title, d.agreement_id, a.agreement_number, a.document_hash
+           FROM document_access_logs dal
+           INNER JOIN documents d ON d.id = dal.document_id
+           LEFT JOIN agreements a ON a.id = d.agreement_id
+           WHERE dal.tenant_id = $1::uuid
+           ORDER BY dal.created_at DESC
+           LIMIT 250`,
+          [tenantId],
+        ),
+        client.query(
+          `SELECT id, actor_email, actor_role, action, target_type, target_id, reason, ip_address, created_at
+           FROM audit_logs
+           WHERE tenant_id = $1::uuid
+           ORDER BY created_at DESC
+           LIMIT 250`,
+          [tenantId],
+        ),
+      ]);
+
+      const entries = [
+        ...eventsRes.rows.map((row: any) => ({
+          id: `ae-${row.id}`,
+          category: this.classifyAuditCategory('agreement_event', row.event_type),
+          action: row.title || row.event_type,
+          description: row.description || '',
+          actor: row.ip_address ? `Participant (${row.ip_address})` : 'Workflow participant',
+          agreement_id: row.agreement_id,
+          agreement_number: row.agreement_number || row.agreement_id,
+          signing_method: row.sign_method || null,
+          verification_result: row.event_type === 'otp' ? 'Verified' : null,
+          document_hash: row.document_hash || null,
+          timestamp: row.created_at,
+        })),
+        ...docLogsRes.rows.map((row: any) => ({
+          id: `dl-${row.id}`,
+          category: this.classifyAuditCategory('document_access', row.action),
+          action: row.action,
+          description: `Document: ${row.document_title || row.document_id}`,
+          actor: row.actor_email || 'Authenticated user',
+          agreement_id: row.agreement_id || null,
+          agreement_number: row.agreement_number || null,
+          signing_method: null,
+          verification_result: row.action === 'VERIFY_INTEGRITY' ? 'Checked' : null,
+          document_hash: row.document_hash || null,
+          timestamp: row.created_at,
+        })),
+        ...adminLogsRes.rows.map((row: any) => ({
+          id: `al-${row.id}`,
+          category: this.classifyAuditCategory('admin_log', row.action),
+          action: row.action,
+          description: row.reason || `${row.target_type || 'record'} ${row.target_id || ''}`.trim(),
+          actor: row.actor_email || row.actor_role || 'System',
+          agreement_id: row.target_type === 'agreement' ? row.target_id : null,
+          agreement_number: null,
+          signing_method: null,
+          verification_result: null,
+          document_hash: null,
+          timestamp: row.created_at,
+        })),
+      ];
+
+      entries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      return entries.filter((entry) => {
+        if (filters?.category && filters.category !== 'all' && entry.category !== filters.category) {
+          return false;
+        }
+        if (filters?.agreementId && entry.agreement_id !== filters.agreementId) {
+          return false;
+        }
+        if (filters?.search) {
+          const q = filters.search.toLowerCase();
+          const hay = [
+            entry.action,
+            entry.description,
+            entry.actor,
+            entry.agreement_number,
+            entry.category,
+            entry.document_hash,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    });
+  }
+
   async verifyDocumentIntegrity(
     tenantId: string,
     user: { id: string; email?: string },
@@ -1111,6 +1240,186 @@ export class DocumentsService {
       file_name: version.file_name,
       mime_type: version.mime_type,
       sha256_hash: version.sha256_hash,
+    };
+  }
+
+  async prepareRecipientDocumentDownload(params: {
+    tenantId: string;
+    agreementId: string;
+    signingRequestId: string;
+    recipientEmail: string;
+    kind: 'signed_pdf' | 'certificate';
+    ip?: string;
+    userAgent?: string;
+  }): Promise<{
+    buffer: Buffer;
+    fileName: string;
+    mimeType: string;
+    sha256Hash: string;
+    documentStatus: string;
+    integrityVerified: boolean;
+    source: 'vault' | 'server_generated_partial';
+  }> {
+    const { tenantId, agreementId, signingRequestId, recipientEmail, kind, ip, userAgent } = params;
+
+    const ctx = await this.db.executeWithTenantContext(tenantId, async (client) => {
+      const agrRes = await client.query(
+        `SELECT * FROM agreements WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+        [agreementId, tenantId],
+      );
+      const agreement = agrRes.rows[0];
+      if (!agreement) {
+        throw new NotFoundException('Agreement not found.');
+      }
+
+      if (kind === 'certificate' && ['Rejected', 'Cancelled', 'Expired'].includes(agreement.status)) {
+        throw new BadRequestException(
+          'Completion certificates cannot be issued for rejected, cancelled, or expired agreements.',
+        );
+      }
+
+      if (['Rejected', 'Cancelled'].includes(agreement.status)) {
+        throw new ForbiddenException(
+          'Signed document download is unavailable for rejected or cancelled agreements.',
+        );
+      }
+
+      if (agreement.status === 'Completed') {
+        const docRes = await client.query(
+          `SELECT dv.id AS version_id, dv.document_id, dv.file_name, dv.mime_type,
+                  dv.sha256_hash, dv.storage_provider, dv.storage_bucket, dv.storage_key
+           FROM document_versions dv
+           INNER JOIN documents d ON d.id = dv.document_id
+           WHERE d.tenant_id = $1::uuid
+             AND d.agreement_id = $2::uuid
+             AND d.doc_kind = $3::varchar
+           ORDER BY dv.version_number DESC, dv.created_at DESC
+           LIMIT 1`,
+          [tenantId, agreementId, kind],
+        );
+
+        if (docRes.rows[0]) {
+          return {
+            mode: 'vault' as const,
+            agreement,
+            version: docRes.rows[0],
+          };
+        }
+      }
+
+      if (kind === 'certificate') {
+        throw new BadRequestException(
+          'Completion certificate is only available once all required signatures are completed.',
+        );
+      }
+
+      const [tenantRes, recRes, sigRes, conRes] = await Promise.all([
+        client.query(`SELECT name FROM tenants WHERE id = $1::uuid`, [tenantId]),
+        client.query(
+          `SELECT id, name, email, signing_order, is_required, sign_method, otp_verified_at, status, signed_at
+           FROM signing_recipients
+           WHERE signing_request_id = $1::uuid
+           ORDER BY signing_order ASC`,
+          [signingRequestId],
+        ),
+        client.query(
+          `SELECT * FROM signature_records WHERE agreement_id = $1::uuid ORDER BY signed_at ASC`,
+          [agreementId],
+        ),
+        client.query(
+          `SELECT * FROM consent_records WHERE agreement_id = $1::uuid ORDER BY consented_at ASC`,
+          [agreementId],
+        ),
+      ]);
+
+      if (sigRes.rows.length === 0) {
+        throw new BadRequestException('No signatures have been recorded for this agreement yet.');
+      }
+
+      return {
+        mode: 'partial' as const,
+        agreement,
+        tenantName: tenantRes.rows[0]?.name || 'GSIGN Enterprise',
+        recipients: recRes.rows,
+        signatures: sigRes.rows,
+        consents: conRes.rows,
+      };
+    });
+
+    if (ctx.mode === 'vault') {
+      const buffer = await this.storage.getPrivateObjectBuffer(
+        ctx.version.storage_provider,
+        ctx.version.storage_bucket,
+        ctx.version.storage_key,
+      );
+      const actualSha256 = this.sha256(buffer);
+      if (actualSha256 !== ctx.version.sha256_hash) {
+        throw new InternalServerErrorException(
+          'Document integrity check failed: stored file hash does not match ledger.',
+        );
+      }
+
+      await this.db.executeWithTenantContext(tenantId, async (client) => {
+        await client.query(
+          `INSERT INTO document_access_logs (tenant_id, document_id, document_version_id, actor_email, action, ip_address, user_agent)
+           VALUES ($1::uuid, $2::uuid, $3::uuid, $4::varchar, 'DOWNLOAD', $5::varchar, $6::text)`,
+          [
+            tenantId,
+            ctx.version.document_id,
+            ctx.version.version_id,
+            recipientEmail,
+            ip || null,
+            userAgent || null,
+          ],
+        );
+      });
+
+      return {
+        buffer,
+        fileName: ctx.version.file_name,
+        mimeType: ctx.version.mime_type || 'application/pdf',
+        sha256Hash: actualSha256,
+        documentStatus: 'Completed',
+        integrityVerified: true,
+        source: 'vault',
+      };
+    }
+
+    const partialStatus =
+      ctx.agreement.status === 'Partially signed' ? 'Partially signed' : 'Partially signed';
+    const partialPdfBuffer = await this.pdfGenerator.generateSignedAgreementPdf({
+      agreement: { ...ctx.agreement, status: partialStatus },
+      tenantName: ctx.tenantName,
+      recipients: ctx.recipients,
+      signatures: ctx.signatures,
+      consents: ctx.consents,
+      fields: Array.isArray(ctx.agreement.fields) ? ctx.agreement.fields : undefined,
+    });
+    const sha256Hash = this.sha256(partialPdfBuffer);
+    const fileName = `${ctx.agreement.agreement_number}_partially_signed.pdf`;
+
+    await this.db.executeWithTenantContext(tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO agreement_events (tenant_id, agreement_id, title, description, event_type, ip_address, hash_value)
+         VALUES ($1::uuid, $2::uuid, 'Document Downloaded', $3::text, 'pdf', $4::varchar, $5::varchar)`,
+        [
+          tenantId,
+          agreementId,
+          `Recipient (${recipientEmail}) downloaded server-generated partially signed PDF`,
+          ip || null,
+          sha256Hash,
+        ],
+      );
+    });
+
+    return {
+      buffer: partialPdfBuffer,
+      fileName,
+      mimeType: 'application/pdf',
+      sha256Hash,
+      documentStatus: partialStatus,
+      integrityVerified: true,
+      source: 'server_generated_partial',
     };
   }
 }

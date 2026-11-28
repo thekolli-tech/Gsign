@@ -688,6 +688,48 @@ export const api = {
     return data;
   },
 
+  async downloadSigningPortalDocument(
+    token: string,
+    kind: 'signed_pdf' | 'certificate' = 'signed_pdf',
+  ): Promise<{
+    fileName: string;
+    sha256Hash: string;
+    documentStatus: string;
+    integrityVerified: boolean;
+  }> {
+    const res = await fetch(
+      `${API_BASE}/signing/portal/${encodeURIComponent(token)}/download?kind=${encodeURIComponent(kind)}`,
+    );
+    if (!res.ok) {
+      const data = await parseJsonSafe(res);
+      throw new Error(data.message || `Download failed (HTTP ${res.status}).`);
+    }
+
+    const disposition = res.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/i);
+    const fileName = match?.[1] || (kind === 'certificate' ? 'completion_certificate.pdf' : 'signed_agreement.pdf');
+    const sha256Hash = res.headers.get('x-document-sha256') || '';
+    const documentStatus = res.headers.get('x-document-status') || '';
+    const integrityVerified = res.headers.get('x-integrity-verified') === 'true';
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    return {
+      fileName,
+      sha256Hash,
+      documentStatus,
+      integrityVerified,
+    };
+  },
+
   async submitSigningSignature(
     token: string,
     payload: {
@@ -797,6 +839,20 @@ export const api = {
     });
     const data = await parseJsonSafe(res);
     if (!res.ok) throw new Error(data.message || 'Failed to load document access logs.');
+    return Array.isArray(data) ? data : [];
+  },
+
+  async getTenantAuditTrail(params?: { category?: string; search?: string; agreementId?: string }) {
+    const qs = new URLSearchParams();
+    if (params?.category && params.category !== 'all') qs.set('category', params.category);
+    if (params?.search) qs.set('search', params.search);
+    if (params?.agreementId) qs.set('agreementId', params.agreementId);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await fetch(`${API_BASE}/documents/audit-trail${suffix}`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to load audit trail.');
     return Array.isArray(data) ? data : [];
   },
 

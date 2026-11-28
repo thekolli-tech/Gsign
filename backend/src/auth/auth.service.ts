@@ -41,6 +41,49 @@ export class AuthService {
     return this.emailService ?? new EmailService(this.db, this.redis);
   }
 
+  private async ensureEnvConfiguredSuperAdmin(normalizedEmail: string): Promise<boolean> {
+    const candidates = [
+      {
+        email: process.env.GSIGN_TEAM_ADMIN_EMAIL?.trim().toLowerCase(),
+        password: process.env.GSIGN_TEAM_ADMIN_PASSWORD,
+        fullName: 'Genemax IT Solution Admin',
+        phone: '+91 99000 00001',
+        reason: 'Auto-provisioned developer & Genemax IT Solution team super admin from environment',
+      },
+      {
+        email: process.env.GSIGN_OWNER_EMAIL?.trim().toLowerCase(),
+        password: process.env.GSIGN_OWNER_INITIAL_PASSWORD,
+        fullName: 'Genemax Platform Owner',
+        phone: '+91 99000 00000',
+        reason: 'Auto-provisioned Platform Owner from environment',
+      },
+    ];
+
+    const match = candidates.find(
+      (c) => c.email && c.password && c.email === normalizedEmail,
+    );
+    if (!match || !match.password) return false;
+
+    const passwordHash = await this.crypto.hashPassword(match.password);
+    await this.db.executeAsSuperAdmin(async (client) => {
+      const res = await client.query(
+        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
+         VALUES ($1, $2, $3, $4, true, true, false, true, NOW())
+         ON CONFLICT (email) DO NOTHING
+         RETURNING id`,
+        [normalizedEmail, passwordHash, match.fullName, match.phone],
+      );
+      if (res.rows[0]?.id) {
+        await client.query(
+          `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason, metadata)
+           VALUES ($1, $2, 'PLATFORM_OWNER', 'ADMIN_BOOTSTRAP', 'USER', $3, $4, '{"provider":"env_bootstrap"}')`,
+          [res.rows[0].id, normalizedEmail, res.rows[0].id, match.reason],
+        );
+      }
+    });
+    return true;
+  }
+
   /**
    * Primary User Login
    */
@@ -64,12 +107,20 @@ export class AuthService {
       );
     }
 
-    // 2. Fetch user
-    const userRes = await this.db.query(
+    // 2. Fetch user (and auto-provision env-configured super admin if not yet seeded)
+    let userRes = await this.db.query(
       `SELECT id, email, password_hash, full_name, is_super_admin, is_active 
        FROM users WHERE email = $1`,
       [normalizedEmail]
     );
+
+    if (userRes.rows.length === 0 && (await this.ensureEnvConfiguredSuperAdmin(normalizedEmail))) {
+      userRes = await this.db.query(
+        `SELECT id, email, password_hash, full_name, is_super_admin, is_active 
+         FROM users WHERE email = $1`,
+        [normalizedEmail]
+      );
+    }
 
     if (userRes.rows.length === 0) {
       await this.redis.incr(rateLimitKey);

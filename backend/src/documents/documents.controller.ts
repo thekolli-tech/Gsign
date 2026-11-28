@@ -120,6 +120,21 @@ export class DocumentsController {
     return this.documentsService.listCertificates(this.requireTenantId(tenantId), agreementId);
   }
 
+  @Get('audit-trail')
+  @Permissions('agreement:read')
+  async auditTrail(
+    @CurrentTenant() tenantId: string | null,
+    @Query('category') category?: string,
+    @Query('search') search?: string,
+    @Query('agreementId') agreementId?: string,
+  ) {
+    return this.documentsService.getTenantAuditTrail(this.requireTenantId(tenantId), {
+      category,
+      search,
+      agreementId,
+    });
+  }
+
   @Get(':id/verify')
   @Permissions('agreement:read')
   async verify(

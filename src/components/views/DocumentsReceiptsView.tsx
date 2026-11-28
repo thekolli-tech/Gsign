@@ -31,15 +31,22 @@ export const DocumentsReceiptsView: React.FC = () => {
     acknowledgePayment,
     setSelectedAgreementId,
     setActiveView,
+    currentRole,
     addToast,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'documents' | 'receipts'>('documents');
+  const [activeTab, setActiveTab] = useState<'documents' | 'audit_trail' | 'receipts'>('documents');
   const [documents, setDocuments] = useState<any[]>([]);
   const [certificates, setCertificates] = useState<any[]>([]);
   const [selectedDocLogs, setSelectedDocLogs] = useState<{ title: string; logs: any[] } | null>(null);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [docsError, setDocsError] = useState<string | null>(null);
+  const [verifyBanner, setVerifyBanner] = useState<{ ok: boolean; text: string } | null>(null);
+  const [auditEntries, setAuditEntries] = useState<any[]>([]);
+  const [loadingAudit, setLoadingAudit] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditCategoryFilter, setAuditCategoryFilter] = useState('all');
+  const [auditSearch, setAuditSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -48,6 +55,8 @@ export const DocumentsReceiptsView: React.FC = () => {
   const [sortBy, setSortBy] = useState<DocumentSortBy>('updated_desc');
   const [page, setPage] = useState(1);
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
+
+  const canUploadDocuments = currentRole !== 'platform_owner' && currentRole !== 'signatory';
 
   const managedRows = useMemo(
     () => buildManagedDocumentRows(documents, agreements),
@@ -96,9 +105,31 @@ export const DocumentsReceiptsView: React.FC = () => {
     }
   };
 
+  const loadAuditTrail = React.useCallback(async () => {
+    setLoadingAudit(true);
+    setAuditError(null);
+    try {
+      const data = await api.getTenantAuditTrail({
+        category: auditCategoryFilter,
+        search: auditSearch.trim() || undefined,
+      });
+      setAuditEntries(data);
+    } catch (err: any) {
+      setAuditError(err.message || 'Could not load audit trail.');
+    } finally {
+      setLoadingAudit(false);
+    }
+  }, [auditCategoryFilter, auditSearch]);
+
   useEffect(() => {
     loadDocumentsAndCertificates();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'audit_trail') {
+      void loadAuditTrail();
+    }
+  }, [activeTab, loadAuditTrail]);
 
   const handleUploadStandalone = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -119,12 +150,17 @@ export const DocumentsReceiptsView: React.FC = () => {
   const handleVerifyIntegrity = async (docId: string, versionId?: string) => {
     try {
       const res = await api.verifyDocumentIntegrity(docId, versionId);
+      setVerifyBanner({
+        ok: Boolean(res.verified),
+        text: `SHA-256 ${res.verified ? 'verified' : 'mismatch'}: ${res.actual_sha256.slice(0, 16)}...`,
+      });
       addToast(
         res.verified ? 'Integrity Verified' : 'Integrity Mismatch',
         `SHA-256 ${res.verified ? 'verified' : 'mismatch'}: ${res.actual_sha256.slice(0, 16)}...`,
         res.verified ? 'success' : 'error',
       );
     } catch (err: any) {
+      setVerifyBanner({ ok: false, text: err.message || 'Could not verify integrity' });
       addToast('Verification Error', err.message || 'Could not verify integrity', 'error');
     }
   };
@@ -251,6 +287,17 @@ export const DocumentsReceiptsView: React.FC = () => {
             </button>
             <button
               type="button"
+              onClick={() => setActiveTab('audit_trail')}
+              className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
+                activeTab === 'audit_trail'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-subtle'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Audit Trail
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTab('receipts')}
               className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
                 activeTab === 'receipts'
@@ -262,13 +309,13 @@ export const DocumentsReceiptsView: React.FC = () => {
             </button>
           </div>
 
-          {activeTab === 'documents' ? (
+          {activeTab === 'documents' && canUploadDocuments ? (
             <label className="cursor-pointer flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle">
               <Upload size={14} />
               <span>Upload document</span>
               <input type="file" className="hidden" disabled={loadingDocs} onChange={handleUploadStandalone} />
             </label>
-          ) : (
+          ) : activeTab === 'receipts' ? (
             <button
               onClick={openReceiptModal}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
@@ -276,12 +323,30 @@ export const DocumentsReceiptsView: React.FC = () => {
               <Plus size={14} />
               <span>{pendingReceipts.length > 0 ? 'Acknowledge payment' : 'Record receipt'}</span>
             </button>
-          )}
+          ) : null}
         </div>
       </div>
 
       {activeTab === 'documents' && (
         <div className="space-y-6">
+          {verifyBanner && (
+            <div
+              className={`p-3.5 rounded-lg border text-xs flex items-center justify-between ${
+                verifyBanner.ok
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800/60 text-rose-700 dark:text-rose-300'
+              }`}
+            >
+              <span>{verifyBanner.text}</span>
+              <button
+                type="button"
+                onClick={() => setVerifyBanner(null)}
+                className="font-semibold underline hover:no-underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           {docsError && (
             <div className="p-3.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between">
               <span>{docsError}</span>
@@ -435,6 +500,8 @@ export const DocumentsReceiptsView: React.FC = () => {
                   <option value="created_asc">Created (Oldest)</option>
                   <option value="signed_desc">Signed Date (Newest)</option>
                   <option value="signed_asc">Signed Date (Oldest)</option>
+                  <option value="name_asc">Name (A–Z)</option>
+                  <option value="name_desc">Name (Z–A)</option>
                 </select>
               </div>
 
@@ -445,6 +512,16 @@ export const DocumentsReceiptsView: React.FC = () => {
                   value={dateFrom}
                   onChange={(e) => {
                     setDateFrom(e.target.value);
+                    setPage(1);
+                  }}
+                  className="w-full px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-[11px]"
+                />
+                <input
+                  type="date"
+                  aria-label="To date"
+                  value={dateTo}
+                  onChange={(e) => {
+                    setDateTo(e.target.value);
                     setPage(1);
                   }}
                   className="w-full px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-[11px]"
@@ -674,6 +751,120 @@ export const DocumentsReceiptsView: React.FC = () => {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Dedicated Audit Trail Tab */}
+      {activeTab === 'audit_trail' && (
+        <div className="space-y-4">
+          <div className="p-3.5 rounded-xl bg-slate-100/80 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
+            Application audit records reflect recorded GSIGN platform events and document hashes. Ordinary application logs are not independently certified legal evidence.
+          </div>
+
+          <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <History size={16} className="text-brand-600" />
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                  Chronological Audit History
+                </h3>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <div className="relative">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={auditSearch}
+                    onChange={(e) => setAuditSearch(e.target.value)}
+                    placeholder="Search actor, action, ref..."
+                    className="pl-8 pr-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                  />
+                </div>
+                <select
+                  aria-label="Filter audit category"
+                  value={auditCategoryFilter}
+                  onChange={(e) => setAuditCategoryFilter(e.target.value)}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                >
+                  <option value="all">All Event Categories</option>
+                  <option value="User activity">User activity</option>
+                  <option value="Authentication events">Authentication events</option>
+                  <option value="Signing events">Signing events</option>
+                  <option value="Document events">Document events</option>
+                  <option value="Administrative events">Administrative events</option>
+                </select>
+              </div>
+            </div>
+
+            {auditError && (
+              <div className="m-4 p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between">
+                <span>{auditError}</span>
+                <button type="button" onClick={() => void loadAuditTrail()} className="font-semibold underline">
+                  Retry
+                </button>
+              </div>
+            )}
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400 text-[11px] bg-slate-50/60 dark:bg-slate-900/40">
+                    <th className="py-3 px-6 font-medium">Timestamp</th>
+                    <th className="py-3 px-6 font-medium">Category</th>
+                    <th className="py-3 px-6 font-medium">Action &amp; Details</th>
+                    <th className="py-3 px-6 font-medium">Actor</th>
+                    <th className="py-3 px-6 font-medium">Agreement / Hash</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                  {loadingAudit ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 px-6 text-center text-slate-400">
+                        Loading audit records...
+                      </td>
+                    </tr>
+                  ) : auditEntries.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 px-6 text-center text-slate-400">
+                        No audit records match the current filter.
+                      </td>
+                    </tr>
+                  ) : (
+                    auditEntries.map((entry) => (
+                      <tr key={entry.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
+                        <td className="py-3 px-6 font-mono text-[11px] text-slate-500 whitespace-nowrap">
+                          {entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '—'}
+                        </td>
+                        <td className="py-3 px-6">
+                          <span className="inline-flex px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-semibold">
+                            {entry.category}
+                          </span>
+                        </td>
+                        <td className="py-3 px-6">
+                          <div className="font-semibold text-slate-900 dark:text-white">{entry.action}</div>
+                          <div className="text-[11px] text-slate-500">{entry.description}</div>
+                          {(entry.signing_method || entry.verification_result) && (
+                            <div className="text-[10px] font-mono text-brand-600 dark:text-brand-400 mt-0.5">
+                              {entry.signing_method ? `Method: ${entry.signing_method}` : ''}
+                              {entry.signing_method && entry.verification_result ? ' · ' : ''}
+                              {entry.verification_result ? `Verification: ${entry.verification_result}` : ''}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-6 text-slate-600 dark:text-slate-300">{entry.actor}</td>
+                        <td className="py-3 px-6 font-mono text-[11px] text-slate-500">
+                          <div>{entry.agreement_number || '—'}</div>
+                          {entry.document_hash && (
+                            <div className="text-[10px] text-slate-400">{entry.document_hash.slice(0, 14)}...</div>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 

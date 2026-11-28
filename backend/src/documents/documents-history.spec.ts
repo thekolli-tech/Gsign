@@ -1,4 +1,4 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { DocumentsController } from './documents.controller';
@@ -151,10 +151,86 @@ describe('Phase 5E — Document History, Completion Certificate & Access Control
 
       await expect(controller.list(null)).rejects.toThrow(ForbiddenException);
       await expect(controller.listCertificates(null)).rejects.toThrow(ForbiddenException);
+      await expect(controller.auditTrail(null)).rejects.toThrow(ForbiddenException);
       await expect(controller.auditLogs(null, docId)).rejects.toThrow(ForbiddenException);
       await expect(controller.download(null, userA, docId, undefined, undefined, req, {} as any)).rejects.toThrow(
         ForbiddenException,
       );
+    });
+
+    it('blocks completion certificate generation for Rejected or Cancelled agreements', async () => {
+      for (const blockedStatus of ['Rejected', 'Cancelled']) {
+        const dbMock: any = {
+          executeWithTenantContext: jest.fn(async (_tid: string, fn: (client: any) => Promise<any>) =>
+            fn({
+              query: jest.fn(async (sql: string) => {
+                if (sql.includes('FROM agreements WHERE id = $1::uuid')) {
+                  return { rows: [{ id: docId, tenant_id: tenantA, status: blockedStatus }] };
+                }
+                return { rows: [] };
+              }),
+            }),
+          ),
+        };
+        const service = new DocumentsService(dbMock, {} as any, {} as any);
+        await expect(service.generateFinalSignedPackage(tenantA, docId)).rejects.toThrow(BadRequestException);
+      }
+    });
+
+    it('classifies and filters tenant audit trail entries chronologically', async () => {
+      const dbMock: any = {
+        executeWithTenantContext: jest.fn(async (_tid: string, fn: (client: any) => Promise<any>) =>
+          fn({
+            query: jest.fn(async (sql: string) => {
+              if (sql.includes('FROM agreement_events')) {
+                return {
+                  rows: [
+                    {
+                      id: '1',
+                      agreement_id: docId,
+                      agreement_number: 'AGR-2026-0100',
+                      document_hash: 'hash-1',
+                      sign_method: 'otp_verified',
+                      event_type: 'otp',
+                      title: 'OTP Verified',
+                      description: 'Recipient verified OTP',
+                      ip_address: '10.0.0.1',
+                      created_at: '2026-02-02T10:00:00Z',
+                    },
+                  ],
+                };
+              }
+              if (sql.includes('FROM document_access_logs')) {
+                return {
+                  rows: [
+                    {
+                      id: '2',
+                      document_id: docId,
+                      action: 'DOWNLOAD',
+                      actor_email: 'admin@tenanta.in',
+                      created_at: '2026-02-03T10:00:00Z',
+                      document_title: 'NDA.pdf',
+                      agreement_id: docId,
+                      agreement_number: 'AGR-2026-0100',
+                      document_hash: 'hash-1',
+                    },
+                  ],
+                };
+              }
+              return { rows: [] };
+            }),
+          }),
+        ),
+      };
+      const service = new DocumentsService(dbMock, {} as any, {} as any);
+      const all = await service.getTenantAuditTrail(tenantA);
+      expect(all).toHaveLength(2);
+      expect(all[0].category).toBe('Document events');
+      expect(all[1].category).toBe('Authentication events');
+
+      const authOnly = await service.getTenantAuditTrail(tenantA, { category: 'Authentication events' });
+      expect(authOnly).toHaveLength(1);
+      expect(authOnly[0].action).toBe('OTP Verified');
     });
 
     it('isolates cross-tenant audit log and download access', async () => {
