@@ -11,6 +11,7 @@ import {
   AgreementTemplate
 } from '../types';
 import { api } from '../services/api';
+import { restoreAppSession, performAppLogout } from './sessionLifecycle';
 
 export type ActiveView = 
   | 'dashboard' 
@@ -28,10 +29,15 @@ export type ActiveView =
   | 'superadmin_integrations'
   | 'superadmin_support'
   | 'superadmin_flags'
+  | 'superadmin_sales_inquiries'
+  | 'accept_invite'
+  | 'landing'
   | 'signin'
   | 'register_company'
   | 'pricing'
-  | 'contact_sales';
+  | 'contact_sales'
+  | 'privacy_policy'
+  | 'terms_conditions';
 
 export interface ToastMessage {
   id: string;
@@ -84,6 +90,8 @@ interface AppContextType {
   setTemplates: React.Dispatch<React.SetStateAction<AgreementTemplate[]>>;
   pricingPlans: PricingPlan[];
   setPricingPlans: React.Dispatch<React.SetStateAction<PricingPlan[]>>;
+  preselectedPlan: { planId: string; billingCycle: 'monthly' | 'annual' } | null;
+  setPreselectedPlan: React.Dispatch<React.SetStateAction<{ planId: string; billingCycle: 'monthly' | 'annual' } | null>>;
   branding: BrandingSettings;
   setBranding: React.Dispatch<React.SetStateAction<BrandingSettings>>;
   // Interactive signing modal state
@@ -107,211 +115,13 @@ interface AppContextType {
   addToast: (title: string, message: string, type?: ToastMessage['type']) => void;
   removeToast: (id: string) => void;
   // Helpers
-  acknowledgePayment: (receiptId: string, ref: string) => void;
+  logout: () => Promise<void>;
+  acknowledgePayment: (receiptId: string, ref: string, mode?: 'UPI' | 'Bank transfer' | 'Credit Card') => Promise<Receipt | null>;
   completeSigning: (agreementId: string, signatureData: string) => Promise<void>;
   createAgreement: (data: Partial<Agreement> & { initialStatus?: 'Draft' | 'Awaiting OTP' | 'Awaiting signature' }) => Promise<Agreement | null>;
   transitionAgreementStatus: (agreementId: string, status: Agreement['status'], reason?: string) => Promise<void>;
   deleteDraftAgreement: (agreementId: string) => Promise<void>;
 }
-
-const initialAgreements: Agreement[] = [
-  {
-    id: 'AGR-2026-0412',
-    recipientName: 'Ravi Kumar',
-    recipientEmail: 'ravi.kumar@example.com',
-    recipientPhone: '+91 98765 44821',
-    templateType: 'Offer Letter',
-    department: 'HR',
-    status: 'Completed',
-    updatedAt: '10 min ago',
-    createdAt: '24 Nov 2026 10:02',
-    feeAmount: 45000,
-    period: '12 months',
-    content: 'This offer is made to Ravi Kumar for a monthly salary of ₹45,000 for 12 months. The recipient agrees to the terms and clauses set out in Schedule A. 1. The recipient agrees to intellectual property assignments and confidentiality agreements.',
-    signMethod: 'basic_drawn',
-    signatureDataUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="220" height="60"><path d="M 10 40 Q 50 10, 80 35 T 140 25 T 190 30" stroke="%235B13EC" stroke-width="3" fill="none"/></svg>',
-    documentHash: 'a91f3b72c4e908f0923058cd41209e7c',
-    witnessRequired: true,
-    witnessName: 'Sunil G (Director)',
-    auditTrail: [
-      { id: '1', title: 'Agreement created', description: 'Template v3 · by Priya, 24 Nov 10:02', timestamp: '24 Nov 10:02', type: 'created' },
-      { id: '2', title: 'Invitation sent', description: 'Email delivered · 10:03', timestamp: '24 Nov 10:03', type: 'sent' },
-      { id: '3', title: 'Link opened', description: 'Mobile Chrome · 10:20', timestamp: '24 Nov 10:20', type: 'viewed', ip: '152.58.12.94', device: 'Chrome Mobile 128 / Android 14' },
-      { id: '4', title: 'OTP verified', description: 'SMS delivered, verified · 10:21', timestamp: '24 Nov 10:21', type: 'otp' },
-      { id: '5', title: 'Consent recorded', description: 'Explicit consent · 10:24', timestamp: '24 Nov 10:24', type: 'consent' },
-      { id: '6', title: 'Signed (basic electronic)', description: 'Document hash a91f…c7 · 10:25', timestamp: '24 Nov 10:25', type: 'signed', hash: 'a91f3b72c4e908f0923058cd41209e7c' },
-      { id: '7', title: 'PDF generated', description: 'Emailed to recipient and HR · 10:26', timestamp: '24 Nov 10:26', type: 'pdf' },
-    ]
-  },
-  {
-    id: 'AGR-2026-0411',
-    recipientName: 'Meera Iyer',
-    recipientEmail: 'meera.iyer@fintech.io',
-    recipientPhone: '+91 99881 24821',
-    templateType: 'NDA',
-    department: 'Legal',
-    status: 'Awaiting OTP',
-    updatedAt: '1 hr ago',
-    createdAt: '24 Nov 2026 09:15',
-    feeAmount: 30000,
-    period: '24 months',
-    content: 'This Non-Disclosure Agreement is made to Meera Iyer for a monthly advisory fee of ₹30,000 for the period of 24 months. The recipient agrees to maintain strict confidentiality of proprietary algorithms and data repositories.',
-    signMethod: 'otp_verified',
-    documentHash: 'c74f8810e4231b578fa98e6a32d184bf',
-    auditTrail: [
-      { id: '1', title: 'Agreement created', description: 'Template v2 · by Priya, 24 Nov 09:15', timestamp: '24 Nov 09:15', type: 'created' },
-      { id: '2', title: 'Invitation sent', description: 'Email delivered · 09:16', timestamp: '24 Nov 09:16', type: 'sent' },
-      { id: '3', title: 'Link opened', description: 'Safari Mobile / iOS 18 · 09:40', timestamp: '24 Nov 09:40', type: 'viewed' },
-      { id: '4', title: 'OTP sent', description: 'SMS dispatched to +91 99881 24821', timestamp: '24 Nov 09:42', type: 'otp' },
-    ]
-  },
-  {
-    id: 'AGR-2026-0410',
-    recipientName: 'Sunrise Traders',
-    recipientEmail: 'procure@sunrisetraders.in',
-    recipientPhone: '+91 94451 98200',
-    templateType: 'Vendor Agreement',
-    department: 'Ops',
-    status: 'Awaiting signature',
-    updatedAt: 'Yesterday',
-    createdAt: '23 Nov 2026 14:30',
-    feeAmount: 120000,
-    period: '12 months',
-    content: 'Master Vendor & Supply Agreement between GSIGN Pvt Ltd and Sunrise Traders for supply chain provisioning valued at ₹1,20,000 per month.',
-    signMethod: 'basic_drawn',
-    documentHash: 'e3b0c44298fc1c149afbf4c8996fb924',
-    auditTrail: [
-      { id: '1', title: 'Agreement created', description: 'Template v4 · by Vikram, 23 Nov 14:30', timestamp: '23 Nov 14:30', type: 'created' },
-      { id: '2', title: 'Invitation sent', description: 'Email delivered · 14:35', timestamp: '23 Nov 14:35', type: 'sent' },
-      { id: '3', title: 'OTP verified', description: 'SMS verified · 15:10', timestamp: '23 Nov 15:10', type: 'otp' },
-    ]
-  },
-  {
-    id: 'AGR-2026-0409',
-    recipientName: 'Anil Rao',
-    recipientEmail: 'anil.rao@franchise.in',
-    recipientPhone: '+91 98840 11928',
-    templateType: 'Franchise Agreement',
-    department: 'Sales',
-    status: 'Expired',
-    updatedAt: '2 days ago',
-    createdAt: '21 Nov 2026 11:00',
-    feeAmount: 250000,
-    period: '36 months',
-    content: 'Franchise Partner Agreement for regional territory distribution in South India.',
-    signMethod: 'basic_drawn',
-    documentHash: '98a3fbc910245aedc45781203498bced',
-    auditTrail: [
-      { id: '1', title: 'Agreement created', description: 'Template v1 · by Karan, 21 Nov 11:00', timestamp: '21 Nov 11:00', type: 'created' },
-      { id: '2', title: 'Invitation sent', description: 'Email delivered · 11:05', timestamp: '21 Nov 11:05', type: 'sent' },
-      { id: '3', title: 'Link Expired', description: 'Signature window closed after 48h limit', timestamp: '23 Nov 11:05', type: 'consent' },
-    ]
-  },
-  {
-    id: 'AGR-2026-0408',
-    recipientName: 'Pooja Shah',
-    recipientEmail: 'pooja.shah@mail.com',
-    recipientPhone: '+91 97720 33411',
-    templateType: 'Offer Letter',
-    department: 'HR',
-    status: 'Rejected',
-    updatedAt: '3 days ago',
-    createdAt: '20 Nov 2026 16:10',
-    feeAmount: 65000,
-    period: 'Permanent',
-    content: 'Employment offer for Senior Product Designer position at GSIGN Pvt Ltd.',
-    signMethod: 'basic_drawn',
-    documentHash: 'fa823bc0192e478acb6812498701235b',
-    auditTrail: [
-      { id: '1', title: 'Agreement created', description: 'Template v3 · by Priya, 20 Nov 16:10', timestamp: '20 Nov 16:10', type: 'created' },
-      { id: '2', title: 'Invitation sent', description: 'Email delivered · 16:15', timestamp: '20 Nov 16:15', type: 'sent' },
-      { id: '3', title: 'Offer declined', description: 'Candidate requested salary renegotiation', timestamp: '21 Nov 09:30', type: 'consent' },
-    ]
-  },
-  {
-    id: 'AGR-2026-0407',
-    recipientName: 'Dev Patel',
-    recipientEmail: 'dev.patel@cloudtech.com',
-    recipientPhone: '+91 93310 99402',
-    templateType: 'Service Contract',
-    department: 'Ops',
-    status: 'Cancelled',
-    updatedAt: '4 days ago',
-    createdAt: '19 Nov 2026 12:00',
-    feeAmount: 85000,
-    period: '6 months',
-    content: 'Infrastructure monitoring & SLA response agreement with CloudTech.',
-    signMethod: 'basic_drawn',
-    documentHash: '3187adcb0912faef8902c4819702341b',
-    auditTrail: [
-      { id: '1', title: 'Agreement created', description: 'Template v2 · by Vikram, 19 Nov 12:00', timestamp: '19 Nov 12:00', type: 'created' },
-      { id: '2', title: 'Agreement voided', description: 'Cancelled by administrator due to scope revision', timestamp: '19 Nov 15:00', type: 'consent' },
-    ]
-  }
-];
-
-const initialReceipts: Receipt[] = [
-  {
-    id: 'RCT-0091',
-    payer: 'Ravi Kumar',
-    amount: 45000,
-    amountInWords: 'Forty-five thousand rupees only',
-    mode: 'UPI',
-    status: 'Issued',
-    date: '24 Nov 2026',
-    txRef: 'UPI-982340192841',
-    purpose: 'First month fee',
-    acknowledgedBy: 'Priya (Admin)',
-    agreementId: 'AGR-2026-0412'
-  },
-  {
-    id: 'RCT-0090',
-    payer: 'Sunrise Traders',
-    amount: 120000,
-    amountInWords: 'One lakh twenty thousand rupees only',
-    mode: 'Bank transfer',
-    status: 'Issued',
-    date: '22 Nov 2026',
-    txRef: 'NEFT-AXIS-992018',
-    purpose: 'Quarterly provisioning advance',
-    acknowledgedBy: 'Priya (Admin)',
-    agreementId: 'AGR-2026-0410'
-  },
-  {
-    id: 'RCT-PENDING',
-    payer: 'Meera Iyer',
-    amount: 30000,
-    amountInWords: 'Thirty thousand rupees only',
-    mode: '—',
-    status: 'Payment not confirmed',
-    date: '24 Nov 2026',
-    txRef: '—',
-    purpose: 'Advisory retainer',
-    acknowledgedBy: '—',
-    agreementId: 'AGR-2026-0411'
-  }
-];
-
-const initialTeam: TeamMember[] = [
-  { id: '1', name: 'Priya N', email: 'priya@gsign.in', role: 'Company Admin', department: 'HR', status: 'Active · MFA on' },
-  { id: '2', name: 'Karan S', email: 'karan@gsign.in', role: 'Company Staff', department: 'Sales', status: 'Active' },
-  { id: '3', name: 'Asha M', email: 'asha@gsign.in', role: 'Company Staff', department: 'Legal', status: 'Invited' },
-  { id: '4', name: 'Vikram R', email: 'vikram@gsign.in', role: 'Company Staff', department: 'Ops', status: 'Deactivated' },
-];
-
-const initialTenants: Tenant[] = [
-  { id: 'ten-1', company: 'GSIGN', plan: 'Business', status: 'Active', docsThisMonth: 62, domain: 'sign.gsign.in', adminEmail: 'admin@gsign.in' },
-  { id: 'ten-2', company: 'Sunrise Traders', plan: 'Starter', status: 'Trial', docsThisMonth: 9, domain: '—', adminEmail: 'ops@sunrisetraders.in' },
-  { id: 'ten-3', company: 'Bright Academy', plan: 'Professional', status: 'Active', docsThisMonth: 214, domain: '—', adminEmail: 'info@brightacademy.edu' },
-  { id: 'ten-4', company: 'Zenith BPO', plan: 'Enterprise', status: 'Payment failed', docsThisMonth: 480, domain: 'esign.zenithbpo.in', adminEmail: 'legal@zenithbpo.in' },
-];
-
-const initialPlans: PricingPlan[] = [
-  { id: 'plan-1', name: 'Starter', priceMonthly: '₹499', documentsLimit: 25, usersLimit: 2, overageRule: '₹ per extra doc' },
-  { id: 'plan-2', name: 'Business', priceMonthly: '₹1,499', documentsLimit: 100, usersLimit: 5, overageRule: '₹ per extra doc', popular: true },
-  { id: 'plan-3', name: 'Professional', priceMonthly: '₹2,999', documentsLimit: 300, usersLimit: 15, overageRule: '₹ per extra doc' },
-  { id: 'plan-4', name: 'Enterprise', priceMonthly: 'Custom', documentsLimit: 'Custom', usersLimit: 'Custom', overageRule: '₹ per extra doc' },
-];
 
 const initialBranding: BrandingSettings = {
   logoText: 'GSIGN',
@@ -333,11 +143,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const [activeView, setActiveViewState] = useState<ActiveView>(() => {
+    try {
+      const path = window.location.pathname.toLowerCase();
+      if (path === '/signin' || path === '/login') return 'signin';
+      if (path === '/register') return 'register_company';
+      if (path === '/pricing') return 'pricing';
+      if (path === '/contact' || path === '/contact-sales') return 'contact_sales';
+      if (path === '/privacy') return 'privacy_policy';
+      if (path === '/terms') return 'terms_conditions';
+    } catch {
+      // ignore window access errors
+    }
     const saved = sessionStorage.getItem('gsign_active_view') as ActiveView | null;
-    if (saved && ['signin', 'register_company', 'pricing', 'contact_sales'].includes(saved)) {
+    if (
+      saved &&
+      ['landing', 'signin', 'register_company', 'pricing', 'contact_sales', 'privacy_policy', 'terms_conditions'].includes(saved)
+    ) {
       return saved;
     }
-    return 'signin';
+    return 'landing';
   });
   const [currentRole, setCurrentRole] = useState<UserRole>('company_admin');
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
@@ -348,40 +172,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [templates, setTemplates] = useState<AgreementTemplate[]>([]);
-  const [pricingPlans, setPricingPlans] = useState<PricingPlan[]>([
-    {
-      id: 'starter',
-      name: 'Starter',
-      priceMonthly: 499,
-      documentsLimit: 25,
-      usersLimit: 2,
-      overageRule: '₹15 per extra document',
-    },
-    {
-      id: 'business',
-      name: 'Business',
-      priceMonthly: 1499,
-      documentsLimit: 100,
-      usersLimit: 5,
-      overageRule: '₹10 per extra document',
-    },
-    {
-      id: 'professional',
-      name: 'Professional',
-      priceMonthly: 2999,
-      documentsLimit: 300,
-      usersLimit: 15,
-      overageRule: '₹5 per extra document',
-    },
-    {
-      id: 'enterprise',
-      name: 'Enterprise',
-      priceMonthly: 'Custom',
-      documentsLimit: 'Unlimited',
-      usersLimit: 'Unlimited',
-      overageRule: 'Custom SLA',
-    }
-  ]);
+  const [pricingPlans, setPricingPlans] = useState<PricingPlan[]>([]);
+  const [preselectedPlan, setPreselectedPlan] = useState<{ planId: string; billingCycle: 'monthly' | 'annual' } | null>(null);
 
   const setActiveView = useCallback((view: ActiveView) => {
     sessionStorage.setItem('gsign_active_view', view);
@@ -431,6 +223,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     tenantId: string | null;
     role: string | null;
   }) => {
+    setAgreements([]);
+    setReceipts([]);
+    setTeamMembers([]);
+    setTenants([]);
+    setTemplates([]);
+    setSelectedAgreementId('');
+
     const isAdminRoot = Boolean(session.isPlatformOwner || session.isSuperAdmin || session.role === 'PLATFORM_OWNER');
     const tenantInfo = await api.getCurrentTenant().catch(() => null);
     const tenantName = isAdminRoot
@@ -468,9 +267,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } else {
       setCurrentRole(session.role === 'Company Admin' ? 'company_admin' : 'company_staff');
       setTenants([]);
-      const [liveUsers, liveInvoices, liveAgreements, liveTemplates] = await Promise.all([
+      const [liveUsers, liveInvoices, liveReceipts, liveAgreements, liveTemplates] = await Promise.all([
         api.getUsers().catch(() => []),
         api.getInvoices().catch(() => []),
+        api.getPaymentReceipts().catch(() => []),
         api.getAgreements().catch(() => []),
         api.getTemplates().catch(() => []),
       ]);
@@ -490,25 +290,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           email: u.email,
           role: (u.role_name || 'Member') as TeamMember['role'],
           department: u.department || 'General',
-          status: u.is_active ? 'Active' : 'Deactivated',
+          status: (u.membership_status === 'Active' && u.is_active ? 'Active' : 'Deactivated') as TeamMember['status'],
           joinedAt: u.joined_at ? new Date(u.joined_at).toLocaleDateString() : '—',
         }))
       );
-      setReceipts(
-        liveInvoices.map((inv: any) => ({
-          id: inv.invoice_number || inv.id,
-          agreementId: inv.id,
-          payer: tenantName,
-          amount: Number(inv.total_amount || inv.amount || 0),
-          amountInWords: `INR ${Number(inv.total_amount || inv.amount || 0).toLocaleString('en-IN')} only`,
-          mode: 'Credit Card',
-          status: inv.status === 'PAID' ? 'Issued' : 'Payment not confirmed',
-          date: inv.created_at ? new Date(inv.created_at).toLocaleDateString() : '—',
-          txRef: inv.invoice_number || inv.id,
-          purpose: 'GSIGN Subscription',
-          acknowledgedBy: 'Platform Billing',
-        }))
-      );
+      const invoiceReceipts: Receipt[] = liveInvoices.map((inv: any) => ({
+        id: inv.invoice_number || inv.id,
+        agreementId: inv.id,
+        payer: tenantName,
+        amount: Number(inv.total_amount || inv.amount || 0),
+        amountInWords: `INR ${Number(inv.total_amount || inv.amount || 0).toLocaleString('en-IN')} only`,
+        mode: 'Credit Card',
+        status: inv.status === 'PAID' ? 'Issued' : 'Payment not confirmed',
+        date: inv.created_at ? new Date(inv.created_at).toLocaleDateString() : '—',
+        txRef: inv.invoice_number || inv.id,
+        purpose: 'GSIGN Subscription',
+        acknowledgedBy: 'Platform Billing',
+      }));
+      setReceipts([...(Array.isArray(liveReceipts) ? liveReceipts : []), ...invoiceReceipts]);
     }
 
     const livePlans = await api.getSubscriptionPlans().catch(() => []);
@@ -541,42 +340,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  // Restore active session on page refresh
+  const clearWorkspaceState = useCallback(() => {
+    setCurrentUser(null);
+    setAgreements([]);
+    setReceipts([]);
+    setTeamMembers([]);
+    setTenants([]);
+    setTemplates([]);
+    setSelectedAgreementId('');
+    setBranding(initialBranding);
+  }, []);
+
+  // Restore active session on page refresh (or open invitation acceptance if ?invite_token= is present)
   useEffect(() => {
     let mounted = true;
-    (async () => {
-      try {
-        const session = await api.getMe();
-        if (!mounted) return;
-        if (session && session.userId) {
-          await loadLiveWorkspaceData(session);
-          const isAdminRoot = Boolean(session.isPlatformOwner || session.isSuperAdmin || session.role === 'PLATFORM_OWNER');
-          const saved = sessionStorage.getItem('gsign_active_view') as ActiveView | null;
-          const publicViews: ActiveView[] = ['signin', 'register_company', 'pricing', 'contact_sales'];
-          if (saved && !publicViews.includes(saved)) {
-            if (!isAdminRoot && saved.startsWith('superadmin_')) {
-              setActiveView('dashboard');
-            } else {
-              setActiveView(saved);
-            }
-          } else {
-            setActiveView(
-              isAdminRoot
-                ? 'superadmin_tenants'
-                : session.role === 'Company Admin'
-                  ? 'dashboard'
-                  : 'agreements'
-            );
-          }
-        }
-      } finally {
-        if (mounted) setAuthLoading(false);
-      }
-    })();
+    const inviteToken = new URLSearchParams(window.location.search).get('invite_token');
+    void restoreAppSession({
+      inviteToken,
+      getMe: () => api.getMe(),
+      loadLiveWorkspaceData,
+      clearWorkspaceState,
+      getSavedActiveView: () => sessionStorage.getItem('gsign_active_view') as ActiveView | null,
+      setActiveView,
+      setAuthLoading,
+      isMounted: () => mounted,
+    });
     return () => {
       mounted = false;
     };
-  }, [loadLiveWorkspaceData, setActiveView]);
+  }, [clearWorkspaceState, loadLiveWorkspaceData, setActiveView]);
 
   const toggleTheme = () => {
     setTheme(prev => {
@@ -598,23 +390,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
-  const acknowledgePayment = (receiptId: string, ref: string) => {
-    setReceipts(prev => prev.map(r => {
-      if (r.id === receiptId || (r.id === 'RCT-PENDING' && receiptId === 'RCT-PENDING')) {
-        const nextId = 'RCT-0092';
-        return {
-          ...r,
-          id: nextId,
-          mode: 'UPI',
-          status: 'Issued',
-          txRef: ref || `UPI-TXN-${Date.now().toString().slice(-6)}`,
-          acknowledgedBy: 'Priya (Admin)',
-          date: '25 Nov 2026'
-        };
-      }
-      return r;
-    }));
-    addToast('Payment Acknowledged', `Official receipt generated with authorized sign-off.`, 'success');
+  const logout = useCallback(async () => {
+    await performAppLogout({
+      apiLogout: () => api.logout(),
+      removeSavedActiveView: () => sessionStorage.removeItem('gsign_active_view'),
+      clearWorkspaceState,
+      resetUiState: (defaultBranding) => {
+        setCurrentRole('company_admin');
+        setSigningAgreement(null);
+        setSigningToken(null);
+        setRecipientModalOpen(false);
+        setNewAgreementModalOpen(false);
+        setAcknowledgeModalOpen(false);
+        setBranding(defaultBranding);
+      },
+      initialBranding,
+      setActiveView,
+    });
+  }, [clearWorkspaceState, setActiveView]);
+
+  const acknowledgePayment = async (
+    receiptId: string,
+    ref: string,
+    mode: 'UPI' | 'Bank transfer' | 'Credit Card' = 'UPI',
+  ): Promise<Receipt | null> => {
+    try {
+      const updated: Receipt = await api.acknowledgePaymentReceipt(receiptId, {
+        payment_mode: mode,
+        tx_reference: ref,
+      });
+      setReceipts(prev => prev.map(r => (r.id === receiptId || r.uuid === receiptId ? updated : r)));
+      addToast('Payment Acknowledged', `Official receipt ${updated.id} issued.`, 'success');
+      return updated;
+    } catch (err: any) {
+      addToast('Acknowledgement Failed', err.message || 'Could not acknowledge payment.', 'error');
+      return null;
+    }
   };
 
   const completeSigning = async (agreementId: string, _signatureData: string) => {
@@ -714,6 +525,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setTemplates,
         pricingPlans,
         setPricingPlans,
+        preselectedPlan,
+        setPreselectedPlan,
         branding,
         setBranding,
         recipientModalOpen,
@@ -731,6 +544,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         toasts,
         addToast,
         removeToast,
+        logout,
         acknowledgePayment,
         completeSigning,
         createAgreement,

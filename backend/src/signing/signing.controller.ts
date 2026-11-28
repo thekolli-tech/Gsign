@@ -25,6 +25,7 @@ import {
   CreateSigningRequestDto,
   RejectSigningDto,
   SubmitSignatureDto,
+  VerifyBiometricAssertionDto,
   VerifySigningOtpDto,
 } from './dto/signing.dto';
 import { SigningService } from './signing.service';
@@ -140,6 +141,50 @@ export class SigningController {
     @Req() req: Request,
   ) {
     return this.signingService.verifyOtp(token, dto.otp, req.ip);
+  }
+
+  @Public()
+  @SkipSubscription()
+  @Get('portal/:token/biometric/capabilities')
+  async getBiometricCapabilities(@Param('token') token: string) {
+    return this.signingService.getBiometricCapabilities(token);
+  }
+
+  @Public()
+  @SkipSubscription()
+  @Post('portal/:token/biometric/challenge')
+  @HttpCode(HttpStatus.OK)
+  async createBiometricChallenge(@Param('token') token: string, @Req() req: Request) {
+    const originHeader = (req.headers.origin as string) || '';
+    const hostHeader = (req.headers.host as string) || 'localhost';
+    const proto = (req.headers['x-forwarded-proto'] as string) || 'https';
+    const origin = originHeader || `${proto}://${hostHeader}`;
+    const rpId = hostHeader.split(':')[0] || 'localhost';
+    return this.signingService.createBiometricChallenge(token, origin, rpId, req.ip);
+  }
+
+  @Public()
+  @SkipSubscription()
+  @Post('portal/:token/biometric/verify')
+  @HttpCode(HttpStatus.OK)
+  async verifyBiometricAssertion(
+    @Param('token') token: string,
+    @Body() dto: VerifyBiometricAssertionDto,
+    @Req() req: Request,
+  ) {
+    const originHeader = (req.headers.origin as string) || '';
+    const hostHeader = (req.headers.host as string) || 'localhost';
+    const proto = (req.headers['x-forwarded-proto'] as string) || 'https';
+    const origin = originHeader || `${proto}://${hostHeader}`;
+    const rpId = hostHeader.split(':')[0] || 'localhost';
+    return this.signingService.verifyBiometricAssertion(
+      token,
+      dto,
+      origin,
+      rpId,
+      req.ip,
+      req.headers['user-agent'],
+    );
   }
 
   @Public()

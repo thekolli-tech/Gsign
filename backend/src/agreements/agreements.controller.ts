@@ -97,4 +97,21 @@ export class AgreementsController {
   ) {
     return this.agreementsService.deleteDraft(tenantId, user, id, req.ip);
   }
+
+  @Post(':id/remind')
+  @Permissions('agreement:update')
+  @ApiOperation({ summary: 'Send a signing reminder to pending signatories for an active agreement' })
+  async remind(
+    @CurrentTenant() tenantId: string,
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+    @Req() req: Request,
+  ) {
+    const originHeader = req.headers.origin as string | undefined;
+    const hostHeader = req.headers.host as string | undefined;
+    const proto = (req.headers['x-forwarded-proto'] as string) || 'https';
+    const originUrl =
+      originHeader || (hostHeader ? `${proto}://${hostHeader}` : 'https://www.gsign.in');
+    return this.agreementsService.remindAgreement(tenantId, user, id, originUrl, req.ip);
+  }
 }

@@ -151,10 +151,17 @@ export const SignInView: React.FC = () => {
           <img
             src={branding.logoUrl || gsignLogo}
             alt="GSIGN"
-            className="h-8 w-auto max-w-[160px] object-contain"
+            className="h-8 w-auto max-w-[160px] object-contain cursor-pointer"
+            onClick={() => setActiveView('landing')}
           />
         </div>
         <div className="flex items-center gap-4 text-xs font-medium">
+          <button
+            onClick={() => setActiveView('landing')}
+            className="text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 transition-colors"
+          >
+            Home
+          </button>
           <button
             onClick={() => setActiveView('pricing')}
             className="text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 transition-colors"

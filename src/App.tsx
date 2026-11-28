@@ -16,13 +16,18 @@ import { BrandingDomainView } from './components/views/BrandingDomainView';
 import { SubscriptionView } from './components/views/SubscriptionView';
 import { SuperAdminTenantsView } from './components/views/SuperAdminTenantsView';
 import { SuperAdminPricingView } from './components/views/SuperAdminPricingView';
+import { SuperAdminAnalyticsView } from './components/views/SuperAdminAnalyticsView';
 import { SuperAdminIntegrationsView } from './components/views/SuperAdminIntegrationsView';
 import { SuperAdminSupportView } from './components/views/SuperAdminSupportView';
 import { SuperAdminFeatureFlagsView } from './components/views/SuperAdminFeatureFlagsView';
+import { SuperAdminSalesInquiriesView } from './components/views/SuperAdminSalesInquiriesView';
 import { SignInView } from './components/views/SignInView';
 import { RegisterCompanyView } from './components/views/RegisterCompanyView';
 import { PricingView } from './components/views/PricingView';
 import { ContactSalesView } from './components/views/ContactSalesView';
+import { AcceptInviteView } from './components/views/AcceptInviteView';
+import { LandingPageView } from './components/views/LandingPageView';
+import { LegalView } from './components/views/LegalView';
 
 // Modals
 import { RecipientPortalModal } from './components/modals/RecipientPortalModal';
@@ -44,7 +49,7 @@ const AppContent: React.FC = () => {
   const renderActiveView = () => {
     switch (activeView) {
       case 'dashboard':
-        return <DashboardView />;
+        return isRootAdmin ? <SuperAdminTenantsView /> : <DashboardView />;
       case 'agreements':
         return <AgreementsView />;
       case 'agreement_detail':
@@ -56,7 +61,7 @@ const AppContent: React.FC = () => {
       case 'reports':
         return <ReportsAnalyticsView />;
       case 'superadmin_analytics':
-        return isRootAdmin ? <ReportsAnalyticsView /> : <DashboardView />;
+        return isRootAdmin ? <SuperAdminAnalyticsView /> : <DashboardView />;
       case 'team_roles':
         return <TeamRolesView />;
       case 'branding_domain':
@@ -73,6 +78,10 @@ const AppContent: React.FC = () => {
         return isRootAdmin ? <SuperAdminSupportView /> : <DashboardView />;
       case 'superadmin_flags':
         return isRootAdmin ? <SuperAdminFeatureFlagsView /> : <DashboardView />;
+      case 'superadmin_sales_inquiries':
+        return isRootAdmin ? <SuperAdminSalesInquiriesView /> : <DashboardView />;
+      case 'landing':
+        return <LandingPageView />;
       case 'signin':
         return <SignInView />;
       case 'register_company':
@@ -81,12 +90,27 @@ const AppContent: React.FC = () => {
         return <PricingView />;
       case 'contact_sales':
         return <ContactSalesView />;
+      case 'accept_invite':
+        return <AcceptInviteView />;
+      case 'privacy_policy':
+        return <LegalView mode="privacy" />;
+      case 'terms_conditions':
+        return <LegalView mode="terms" />;
       default:
-        return <DashboardView />;
+        return isRootAdmin ? <SuperAdminTenantsView /> : <DashboardView />;
     }
   };
 
-  const isStandaloneView = ['signin', 'register_company', 'pricing', 'contact_sales'].includes(activeView);
+  const isStandaloneView = [
+    'landing',
+    'signin',
+    'register_company',
+    'pricing',
+    'contact_sales',
+    'accept_invite',
+    'privacy_policy',
+    'terms_conditions',
+  ].includes(activeView);
 
   if (isStandaloneView) {
     return (
@@ -100,13 +124,19 @@ const AppContent: React.FC = () => {
 
   return (
     <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased selection:bg-brand-600 selection:text-white transition-colors duration-200 overflow-x-hidden">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:px-3 focus:py-2 focus:rounded-lg focus:bg-brand-600 focus:text-white focus:text-xs focus:font-medium"
+      >
+        Skip to main content
+      </a>
       {/* Sidebar (drawer on mobile/tablet, fixed rail on lg+) */}
       <Sidebar isOpen={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 bg-slate-50 dark:bg-slate-950 transition-colors duration-200">
         <Header onOpenMenu={() => setMobileMenuOpen(true)} />
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+        <main id="main-content" tabIndex={-1} className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto outline-none">
           {renderActiveView()}
         </main>
       </div>

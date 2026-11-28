@@ -1,9 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigModule } from '@nestjs/config';
+import { Client } from 'pg';
 import { DatabaseModule } from '../database/database.module';
 import { RedisModule } from '../redis/redis.module';
 import { DatabaseService } from '../database/database.service';
 import { RedisService } from '../redis/redis.service';
+import {
+  cleanupSyntheticFixtures,
+  verifySafeIntegrationTarget,
+} from '../database/test-db-guard';
 import { AuthService } from './auth.service';
 import { CryptoService } from './crypto.service';
 import { MfaService } from './mfa.service';
@@ -18,10 +23,14 @@ describe('AuthService & Security Integration Tests (Milestone 1)', () => {
   let mfaService: MfaService;
   let db: DatabaseService;
   let redis: RedisService;
+  let adminClient: Client | null = null;
   let testUserId: string;
   let testTenantId: string;
+  let testEmail: string;
 
   beforeAll(async () => {
+    const { adminDbUrl } = await verifySafeIntegrationTarget();
+
     const module: TestingModule = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -50,54 +59,59 @@ describe('AuthService & Security Integration Tests (Milestone 1)', () => {
     await db.onModuleInit();
     await redis.onModuleInit();
 
-    // Create a dedicated test user and tenant
+    adminClient = new Client({ connectionString: adminDbUrl });
+    await adminClient.connect();
+
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    testEmail = `test-suite-${runId}@example.com`;
+    const testSlug = `test-tenant-suite-${runId}`;
+
+    // Create a dedicated synthetic test user and tenant via adminClient
     const passwordHash = await cryptoService.hashPassword('StrongPassword123!');
-    const userRes = await db.query(
+    const userRes = await adminClient.query(
       `INSERT INTO users (email, password_hash, full_name, is_super_admin, is_active)
        VALUES ($1, $2, 'Test Suite User', false, true)
-       ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
        RETURNING id;`,
-      ['test-suite@gsign.in', passwordHash]
+      [testEmail, passwordHash]
     );
     testUserId = userRes.rows[0].id;
 
-    const tenantRes = await db.query(
+    const tenantRes = await adminClient.query(
       `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
-       VALUES ('Test Suite Tenant', 'test-tenant-suite', 'suite@gsign.in', '+91 90000 00000', 'Active')
-       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
-       RETURNING id;`
+       VALUES ('Test Suite Tenant', $1, $2, '+91 90000 00000', 'Active')
+       RETURNING id;`,
+      [testSlug, `suite-${runId}@example.com`]
     );
     testTenantId = tenantRes.rows[0].id;
 
     // Link user to tenant with Company Admin role
-    const roleRes = await db.query(`SELECT id FROM roles WHERE name = 'Company Admin' LIMIT 1;`);
+    const roleRes = await adminClient.query(`SELECT id FROM roles WHERE name = 'Company Admin' LIMIT 1;`);
     const roleId = roleRes.rows[0].id;
 
-    await db.query("SELECT set_config('app.is_super_admin', 'true', true);");
-    await db.query(
+    await adminClient.query(
       `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
-       VALUES ($1, $2, $3, 'QA', 'Active')
-       ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
+       VALUES ($1, $2, $3, 'QA', 'Active');`,
       [testTenantId, testUserId, roleId]
     );
   }, 30000);
 
   afterAll(async () => {
-    // Clean up test user and tenant
-    if (testUserId) {
-      await db.query(`DELETE FROM users WHERE id = $1;`, [testUserId]);
+    try {
+      await cleanupSyntheticFixtures(adminClient, {
+        userIds: [testUserId],
+        tenantIds: [testTenantId],
+      });
+    } finally {
+      if (adminClient) await adminClient.end().catch(() => {});
+      if (redis) await redis.onModuleDestroy().catch(() => {});
+      if (db) await db.onModuleDestroy().catch(() => {});
     }
-    if (testTenantId) {
-      await db.query(`DELETE FROM tenants WHERE id = $1;`, [testTenantId]);
-    }
-    await redis.onModuleDestroy();
-    await db.onModuleDestroy();
   });
 
   // TEST 1: Successful Login
   it('Requirement 1: Should authenticate successfully with correct credentials', async () => {
     const result = await authService.login(
-      { email: 'test-suite@gsign.in', password: 'StrongPassword123!' },
+      { email: testEmail, password: 'StrongPassword123!' },
       '127.0.0.1',
       'Jest-Test-Runner'
     );
@@ -105,7 +119,7 @@ describe('AuthService & Security Integration Tests (Milestone 1)', () => {
     expect(result.mfa_required).toBe(false);
     expect(result.session).toBeDefined();
     expect(result.session!.userId).toBe(testUserId);
-    expect(result.session!.email).toBe('test-suite@gsign.in');
+    expect(result.session!.email).toBe(testEmail);
     expect(result.session!.tenantId).toBe(testTenantId);
     expect(result.session!.role).toBe('Company Admin');
   });
@@ -114,7 +128,7 @@ describe('AuthService & Security Integration Tests (Milestone 1)', () => {
   it('Requirement 2: Should reject incorrect password with UnauthorizedException', async () => {
     await expect(
       authService.login(
-        { email: 'test-suite@gsign.in', password: 'WrongPassword999!' },
+        { email: testEmail, password: 'WrongPassword999!' },
         '127.0.0.1',
         'Jest-Test-Runner'
       )
@@ -220,7 +234,7 @@ describe('AuthService & Security Integration Tests (Milestone 1)', () => {
 
     // 5. Verify that login now requires MFA
     const loginAttempt = await authService.login(
-      { email: 'test-suite@gsign.in', password: 'StrongPassword123!' },
+      { email: testEmail, password: 'StrongPassword123!' },
       '127.0.0.1',
       'MFA-Login-Agent'
     );
@@ -243,7 +257,7 @@ describe('AuthService & Security Integration Tests (Milestone 1)', () => {
   // TEST 7: Invalid MFA Code Rejection
   it('Requirement 7: Should reject invalid MFA codes and prevent replay attacks', async () => {
     const loginAttempt = await authService.login(
-      { email: 'test-suite@gsign.in', password: 'StrongPassword123!' },
+      { email: testEmail, password: 'StrongPassword123!' },
       '127.0.0.1',
       'Replay-Test-Agent'
     );
@@ -277,7 +291,7 @@ describe('AuthService & Security Integration Tests (Milestone 1)', () => {
 
     // Second login attempt within same window with the same code: must be rejected as replay
     const loginAttempt2 = await authService.login(
-      { email: 'test-suite@gsign.in', password: 'StrongPassword123!' },
+      { email: testEmail, password: 'StrongPassword123!' },
       '127.0.0.1',
       'Replay-Test-Agent'
     );
@@ -309,7 +323,7 @@ describe('AuthService & Security Integration Tests (Milestone 1)', () => {
 
     // Attempt 1 with recovery code: succeeds
     const login1 = await authService.login(
-      { email: 'test-suite@gsign.in', password: 'StrongPassword123!' },
+      { email: testEmail, password: 'StrongPassword123!' },
       '127.0.0.1',
       'Recovery-Agent'
     );
@@ -329,7 +343,7 @@ describe('AuthService & Security Integration Tests (Milestone 1)', () => {
 
     // Attempt 2 with the same recovery code: must be rejected
     const login2 = await authService.login(
-      { email: 'test-suite@gsign.in', password: 'StrongPassword123!' },
+      { email: testEmail, password: 'StrongPassword123!' },
       '127.0.0.1',
       'Recovery-Agent'
     );

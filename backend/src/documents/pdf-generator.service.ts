@@ -1,8 +1,116 @@
 import { Injectable } from '@nestjs/common';
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib';
 
+export interface PreparedPdfField {
+  id?: string;
+  type: string;
+  label: string;
+  required?: boolean;
+  page?: number;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  assignedRole?: string;
+  value?: string;
+  imageDataUrl?: string;
+}
+
 @Injectable()
 export class PdfGeneratorService {
+  private clamp(val: number, min: number, max: number): number {
+    if (!Number.isFinite(val)) return min;
+    return Math.min(max, Math.max(min, val));
+  }
+
+  private async renderPreparedFieldsOnPdf(
+    pdfDoc: PDFDocument,
+    fields: PreparedPdfField[] | undefined,
+    boldFont: PDFFont,
+    regularFont: PDFFont,
+  ): Promise<void> {
+    if (!Array.isArray(fields) || fields.length === 0) return;
+
+    for (let idx = 0; idx < fields.length; idx++) {
+      const f = fields[idx];
+      const targetPageNum = Math.max(1, Math.floor(Number(f.page || 1)));
+      while (pdfDoc.getPageCount() < targetPageNum) {
+        pdfDoc.addPage([595.28, 841.89]);
+      }
+      const targetPage = pdfDoc.getPage(targetPageNum - 1);
+      const { width: pageW, height: pageH } = targetPage.getSize();
+
+      const wPct = this.clamp(Number(f.width ?? 32), 12, 80);
+      const hPct = this.clamp(Number(f.height ?? 8), 4, 24);
+      const xPct = this.clamp(Number(f.x ?? (idx % 2 === 0 ? 8 : 54)), 2, 98 - wPct);
+      const yPct = this.clamp(Number(f.y ?? 72), 8, 96 - hPct);
+
+      const boxW = this.clamp((wPct / 100) * pageW, 60, pageW - 48);
+      const boxH = this.clamp((hPct / 100) * pageH, 26, pageH - 96);
+      const boxX = this.clamp((xPct / 100) * pageW, 24, pageW - 24 - boxW);
+      // Convert top-left percentage Y to PDF bottom-left coordinate
+      const topY = pageH - (yPct / 100) * pageH;
+      const boxY = this.clamp(topY - boxH, 24, pageH - 64 - boxH);
+
+      const isRequired = Boolean(f.required);
+      targetPage.drawRectangle({
+        x: boxX,
+        y: boxY,
+        width: boxW,
+        height: boxH,
+        borderColor: isRequired ? rgb(37 / 255, 99 / 255, 235 / 255) : rgb(0.58, 0.64, 0.72),
+        borderWidth: isRequired ? 1.2 : 0.8,
+        color: rgb(0.97, 0.98, 1),
+      });
+
+      const title = `${f.label || f.type}${isRequired ? ' *' : ''}`;
+      targetPage.drawText(title.slice(0, 32), {
+        x: boxX + 6,
+        y: boxY + boxH - 12,
+        size: 8,
+        font: boldFont,
+        color: rgb(0.06, 0.09, 0.16),
+      });
+
+      const sub = f.value
+        ? String(f.value).slice(0, 34)
+        : `${f.type} · ${f.assignedRole || 'Recipient'}`;
+      targetPage.drawText(sub, {
+        x: boxX + 6,
+        y: boxY + 6,
+        size: 7,
+        font: regularFont,
+        color: rgb(0.39, 0.45, 0.55),
+      });
+
+      if (f.imageDataUrl && typeof f.imageDataUrl === 'string') {
+        const imgMatch = f.imageDataUrl.match(/^data:image\/(png|jpeg|jpg);base64,(.+)$/i);
+        if (imgMatch) {
+          try {
+            const imgType = imgMatch[1].toLowerCase();
+            const imgBuf = Buffer.from(imgMatch[2], 'base64');
+            if (imgBuf.length > 32) {
+              const embedded =
+                imgType === 'png'
+                  ? await pdfDoc.embedPng(imgBuf)
+                  : await pdfDoc.embedJpg(imgBuf);
+              const maxW = Math.max(24, boxW * 0.4);
+              const maxH = Math.max(18, boxH - 8);
+              const dims = embedded.scaleToFit(maxW, maxH);
+              targetPage.drawImage(embedded, {
+                x: boxX + boxW - dims.width - 4,
+                y: boxY + 4,
+                width: dims.width,
+                height: dims.height,
+              });
+            }
+          } catch {
+            // Ignore malformed field image payload
+          }
+        }
+      }
+    }
+  }
   private wrapText(text: string, maxCharsPerLine = 88): string[] {
     const lines: string[] = [];
     for (const paragraph of (text || '').split(/\r?\n/)) {
@@ -53,8 +161,9 @@ export class PdfGeneratorService {
   async generateAgreementPdf(params: {
     agreement: any;
     tenantName: string;
+    fields?: PreparedPdfField[];
   }): Promise<Buffer> {
-    const { agreement, tenantName } = params;
+    const { agreement, tenantName, fields } = params;
     const pdfDoc = await PDFDocument.create();
     const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -131,6 +240,8 @@ export class PdfGeneratorService {
       color: rgb(0.39, 0.45, 0.55),
     });
 
+    await this.renderPreparedFieldsOnPdf(pdfDoc, fields, boldFont, regularFont);
+
     const bytes = await pdfDoc.save();
     return Buffer.from(bytes);
   }
@@ -141,8 +252,9 @@ export class PdfGeneratorService {
     recipients: any[];
     signatures: any[];
     consents: any[];
+    fields?: PreparedPdfField[];
   }): Promise<Buffer> {
-    const { agreement, tenantName, recipients, signatures, consents } = params;
+    const { agreement, tenantName, recipients, signatures, consents, fields } = params;
     const pdfDoc = await PDFDocument.create();
     const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -260,14 +372,18 @@ export class PdfGeneratorService {
       });
 
       if (sig?.signature_data_url && typeof sig.signature_data_url === 'string') {
-        const match = sig.signature_data_url.match(/^data:image\/png;base64,(.+)$/);
+        const match = sig.signature_data_url.match(/^data:image\/(png|jpeg|jpg);base64,(.+)$/i);
         if (match) {
           try {
-            const imgBuf = Buffer.from(match[1], 'base64');
+            const imgType = match[1].toLowerCase();
+            const imgBuf = Buffer.from(match[2], 'base64');
             if (imgBuf.length > 32) {
-              const pngImage = await pdfDoc.embedPng(imgBuf);
-              const dims = pngImage.scaleToFit(100, 52);
-              page.drawImage(pngImage, {
+              const embeddedImage =
+                imgType === 'png'
+                  ? await pdfDoc.embedPng(imgBuf)
+                  : await pdfDoc.embedJpg(imgBuf);
+              const dims = embeddedImage.scaleToFit(100, 52);
+              page.drawImage(embeddedImage, {
                 x: 430,
                 y: boxBottom + 16,
                 width: dims.width,
@@ -275,7 +391,7 @@ export class PdfGeneratorService {
               });
             }
           } catch {
-            // Ignore malformed PNG payload
+            // Ignore malformed image payload
           }
         }
       }
@@ -290,6 +406,8 @@ export class PdfGeneratorService {
       font: regularFont,
       color: rgb(0.39, 0.45, 0.55),
     });
+
+    await this.renderPreparedFieldsOnPdf(pdfDoc, fields, boldFont, regularFont);
 
     const bytes = await pdfDoc.save();
     return Buffer.from(bytes);
@@ -331,13 +449,28 @@ export class PdfGeneratorService {
     });
     y -= 24;
 
+    const totalRecipients = recipients.length;
+    const signedRecipients = recipients.filter((r) => r.status === 'signed').length;
+    const rejectedRecipients = recipients.filter((r) => r.status === 'rejected').length;
+
+    let completionStatus = 'In Progress';
+    if (agreement.status === 'Rejected' || rejectedRecipients > 0) {
+      completionStatus = 'Rejected';
+    } else if (agreement.status === 'Completed' || (totalRecipients > 0 && signedRecipients === totalRecipients)) {
+      completionStatus = 'Fully Signed';
+    } else if (agreement.status === 'Partially signed' || signedRecipients > 0) {
+      completionStatus = 'Partially Signed';
+    }
+
     const summaryLines = [
       `Agreement Number: ${agreement.agreement_number}`,
+      `Agreement Completion Status: ${completionStatus} (${signedRecipients}/${totalRecipients} signed)`,
       `Agreement Type: ${agreement.template_type} (${agreement.department})`,
       `Issuer Organization: ${tenantName}`,
       `Issued At (UTC): ${new Date().toISOString()}`,
       `Agreement Content SHA-256: ${agreement.document_hash}`,
       `Final Signed PDF SHA-256: ${finalPdfSha256}`,
+      `Audit Notice: Summary of recorded GSIGN events and hashes only; not independent proof of legal validity.`,
     ];
     for (const line of summaryLines) {
       page.drawText(line, { x: 48, y, size: 9.5, font: regularFont, color: rgb(0.2, 0.25, 0.33) });

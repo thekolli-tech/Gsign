@@ -1,6 +1,7 @@
 import {
   Injectable,
   Logger,
+  Optional,
   UnauthorizedException,
   BadRequestException,
   ForbiddenException,
@@ -8,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { RedisService } from '../redis/redis.service';
+import { EmailService } from '../notifications/email.service';
 import { CryptoService } from './crypto.service';
 import { MfaService } from './mfa.service';
 import { SessionService, ActiveSession } from './session.service';
@@ -16,6 +18,7 @@ import { VerifyMfaDto } from './dto/verify-mfa.dto';
 import { RecoveryCodeDto } from './dto/recovery-code.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { CompleteCompanySetupDto } from './dto/complete-company-setup.dto';
+import { createCheckoutAccessToken } from '../payments/checkout-token.util';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
@@ -30,8 +33,13 @@ export class AuthService {
     private readonly redis: RedisService,
     private readonly crypto: CryptoService,
     private readonly mfaService: MfaService,
-    private readonly sessionService: SessionService
+    private readonly sessionService: SessionService,
+    @Optional() private readonly emailService?: EmailService,
   ) {}
+
+  private getEmailService(): EmailService {
+    return this.emailService ?? new EmailService(this.db, this.redis);
+  }
 
   /**
    * Primary User Login
@@ -450,21 +458,26 @@ export class AuthService {
 
     const appBaseUrl = (process.env.APP_URL || 'https://www.gsign.in').replace(/\/+$/, '');
     const verifyUrl = `${appBaseUrl}/?verify_token=${rawToken}`;
-    const delivery = await this.sendEmail(
-      adminEmail,
-      'Verify Your GSIGN Company Registration',
-      `<p>Hello ${dto.admin_full_name.trim()},</p>
-       <p>Thank you for registering <strong>${dto.company_name.trim()}</strong> on GSIGN.</p>
-       <p>Click the link below to verify your work email address (expires in 24 hours):</p>
-       <p><a href="${verifyUrl}">Verify Company Email</a></p>
-       <p>If you did not initiate this registration, you can safely ignore this email.</p>`,
-    );
+    const delivery = await this.getEmailService().sendNotification({
+      template: 'email_verification',
+      to: adminEmail,
+      payload: {
+        recipientName: dto.admin_full_name.trim(),
+        companyName: dto.company_name.trim(),
+        verifyUrl,
+      },
+      safeMetadata: { registration_id: regId },
+    });
 
     return {
       success: true,
       message: 'Company registration received. An email verification link has been sent.',
       registration_id: regId,
-      email_delivery: delivery,
+      email_delivery: {
+        sent: delivery.delivered,
+        status: delivery.deliveryStatus,
+        error: delivery.errorCode,
+      },
       ...(process.env.NODE_ENV !== 'production' ? { verification_token: rawToken } : {}),
     };
   }
@@ -545,6 +558,11 @@ export class AuthService {
       throw new BadRequestException('Selected subscription plan is invalid or inactive.');
     }
     const plan = planRes.rows[0];
+    if (plan.slug === 'enterprise') {
+      throw new BadRequestException(
+        'Enterprise plans require custom sales onboarding and cannot enter self-serve paid checkout.',
+      );
+    }
 
     // Create Tenant and first Company Admin
     const slugBase = reg.company_name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 48);
@@ -605,6 +623,20 @@ export class AuthService {
 
       await client.query('COMMIT');
 
+      await this.getEmailService()
+        .sendNotification({
+          template: 'company_registration_ack',
+          to: reg.admin_email,
+          tenantId,
+          idempotencyKey: `reg_ack:${reg.id}`,
+          payload: {
+            recipientName: reg.admin_full_name || 'Administrator',
+            companyName: reg.company_name,
+          },
+          safeMetadata: { registration_id: reg.id },
+        })
+        .catch(() => {});
+
       return {
         success: true,
         message: 'Company workspace provisioned. Paid subscription payment required to activate access.',
@@ -612,6 +644,7 @@ export class AuthService {
         admin_email: reg.admin_email,
         subscription_status: 'PAYMENT_PENDING',
         plan_name: plan.name,
+        checkout_access_token: createCheckoutAccessToken(reg.id, reg.admin_email),
       };
     } catch (err) {
       await client.query('ROLLBACK');
@@ -690,11 +723,16 @@ export class AuthService {
         JSON.stringify({ userId: user.id, otpHash, attempts: 0 })
       );
 
-      await this.sendEmail(
-        user.email,
-        'GSIGN Password Reset Verification Code',
-        `<p>Hello ${user.full_name || 'User'},</p><p>Your GSIGN password reset verification code is:</p><h2 style="letter-spacing:4px;">${otp}</h2><p>This code expires in 10 minutes. If you did not request a password reset, please ignore this email.</p>`,
-      );
+      await this.getEmailService().sendNotification({
+        template: 'password_reset',
+        to: user.email,
+        payload: {
+          recipientName: user.full_name || 'User',
+          otp,
+          expiresMinutes: 10,
+        },
+        safeMetadata: { user_id: user.id },
+      });
 
       if (process.env.NODE_ENV !== 'production') {
         return {
@@ -784,11 +822,13 @@ export class AuthService {
 
     await this.sessionService.revokeAllUserSessions(userId);
 
-    await this.db.query(
-      `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason)
-       VALUES ($1, $2, 'USER', 'PASSWORD_RESET_OTP', 'USER', $3, 'Password reset completed via verified email OTP');`,
-      [userId, updated.rows[0].email, userId]
-    );
+    await this.db.executeAsSuperAdmin(async (client) => {
+      await client.query(
+        `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason)
+         VALUES ($1, $2, 'USER', 'PASSWORD_RESET_OTP', 'USER', $3, 'Password reset completed via verified email OTP');`,
+        [userId, updated.rows[0].email, userId]
+      );
+    });
 
     return {
       success: true,
@@ -810,8 +850,10 @@ export class AuthService {
     }
 
     const roleRes = await this.db.query(
-      `SELECT id, name FROM roles WHERE name = $1`,
-      [dto.role_name]
+      `SELECT id, name FROM roles
+       WHERE name = $1 AND (is_system_role = true OR tenant_id = $2::uuid)
+       LIMIT 1`,
+      [dto.role_name, inviter.tenantId],
     );
     if (roleRes.rows.length === 0) {
       throw new BadRequestException(`Role '${dto.role_name}' does not exist.`);
@@ -824,13 +866,61 @@ export class AuthService {
 
     const tenantName = await this.db.executeWithTenantContext(inviter.tenantId, async (client) => {
       const tRes = await client.query(
-        `SELECT name, status, (to_jsonb(t)->>'deleted_at') AS deleted_at FROM tenants t WHERE t.id = $1 LIMIT 1;`,
+        `SELECT name, status, (to_jsonb(t)->>'deleted_at') AS deleted_at FROM tenants t WHERE t.id = $1 FOR UPDATE;`,
         [inviter.tenantId],
       );
       const tRow = tRes.rows[0];
       if (!tRow || tRow.deleted_at || tRow.status === 'Archived') {
         throw new ForbiddenException('Cannot send invitations for an archived workspace.');
       }
+
+      const existingActiveMember = await client.query(
+        `SELECT tm.id
+         FROM tenant_memberships tm
+         JOIN users u ON u.id = tm.user_id
+         WHERE tm.tenant_id = $1::uuid AND LOWER(u.email) = LOWER($2) AND tm.status = 'Active'
+         LIMIT 1`,
+        [inviter.tenantId, inviteeEmail],
+      );
+      if (existingActiveMember.rows.length > 0) {
+        throw new BadRequestException('This user is already an active member of this workspace.');
+      }
+
+      if (!inviter?.isPlatformOwner) {
+        const subRes = await client.query(
+          `SELECT sp.name AS plan_name, sp.max_users
+           FROM tenant_subscriptions ts
+           JOIN subscription_plans sp ON sp.id = ts.plan_id
+           WHERE ts.tenant_id = $1::uuid
+             AND (
+               (UPPER(ts.status) IN ('ACTIVE', 'TRIALING') AND (ts.current_period_end IS NULL OR ts.current_period_end >= NOW() OR (ts.grace_period_end IS NOT NULL AND ts.grace_period_end > NOW())))
+               OR (UPPER(ts.status) = 'PAST_DUE' AND ts.grace_period_end IS NOT NULL AND ts.grace_period_end > NOW())
+             )
+           ORDER BY ts.updated_at DESC NULLS LAST, ts.created_at DESC
+           LIMIT 1`,
+          [inviter.tenantId],
+        );
+        const activeSub = subRes.rows[0];
+        if (!activeSub) {
+          throw new ForbiddenException('An active subscription plan is required to invite team members.');
+        }
+        const maxUsers = Number(activeSub.max_users);
+        if (maxUsers !== -1) {
+          const seatRes = await client.query(
+            `SELECT
+               (SELECT COUNT(*)::int FROM tenant_memberships WHERE tenant_id = $1::uuid AND status = 'Active') AS active_users,
+               (SELECT COUNT(*)::int FROM invitations WHERE tenant_id = $1::uuid AND accepted_at IS NULL AND expires_at > NOW() AND email <> $2) AS pending_invites`,
+            [inviter.tenantId, inviteeEmail],
+          );
+          const usedSeats = Number(seatRes.rows[0]?.active_users ?? 0) + Number(seatRes.rows[0]?.pending_invites ?? 0);
+          if (usedSeats >= maxUsers) {
+            throw new ForbiddenException(
+              `Seat limit (${maxUsers}) reached for the ${activeSub.plan_name} plan (including pending invitations). Please upgrade your subscription or revoke an unused invitation.`,
+            );
+          }
+        }
+      }
+
       // Expire any previous unaccepted invitations for the same email in this tenant
       await client.query(
         `DELETE FROM invitations WHERE tenant_id = $1 AND email = $2 AND accepted_at IS NULL;`,
@@ -846,65 +936,108 @@ export class AuthService {
 
     const appBaseUrl = (process.env.APP_URL || 'https://www.gsign.in').replace(/\/+$/, '');
     const inviteUrl = `${appBaseUrl}/?invite_token=${rawToken}`;
-    const delivery = await this.sendEmail(
-      inviteeEmail,
-      `You're invited to join ${tenantName} on GSIGN`,
-      `<p>Hello,</p>
-       <p>You have been invited to join <strong>${tenantName}</strong> on GSIGN as <strong>${role.name}</strong> (${dto.department.trim()}).</p>
-       <p>Click the link below to accept your invitation and set up your account (expires in 7 days):</p>
-       <p><a href="${inviteUrl}">Accept Workspace Invitation</a></p>`,
-    );
+    const delivery = await this.getEmailService().sendNotification({
+      template: 'employee_invitation',
+      to: inviteeEmail,
+      tenantId: inviter.tenantId,
+      payload: {
+        tenantName,
+        roleName: role.name,
+        department: dto.department.trim(),
+        inviteUrl,
+      },
+      safeMetadata: { role_name: role.name, department: dto.department.trim() },
+    });
 
     return {
       success: true,
       message: 'Employee invitation created successfully.',
-      email_delivery: delivery,
+      email_delivery: {
+        sent: delivery.delivered,
+        status: delivery.deliveryStatus,
+        error: delivery.errorCode,
+      },
       ...(process.env.NODE_ENV !== 'production' ? { invitation_token: rawToken } : {}),
     };
   }
 
-  private async sendEmail(
-    to: string,
-    subject: string,
-    html: string,
-  ): Promise<{ sent: boolean; error?: string }> {
-    const resendKey = process.env.RESEND_API_KEY;
-    const fromEmail = process.env.EMAIL_FROM || 'GSIGN Security <noreply@gsign.in>';
-    if (!resendKey) {
-      return { sent: false, error: 'RESEND_API_KEY not configured' };
+  /**
+   * 5.1 List pending/recent invitations for current tenant
+   */
+  async listInvitations(tenantId: string | null) {
+    if (!tenantId) {
+      return [];
     }
-
-    try {
-      const response = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${resendKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: fromEmail,
-          to: [to],
-          subject,
-          html,
-        }),
-      });
-      if (!response.ok) {
-        const msg = `Resend returned HTTP ${response.status}`;
-        this.logger.warn(`Email delivery failed (${subject}): ${msg}`);
-        return { sent: false, error: msg };
-      }
-      return { sent: true };
-    } catch (err: any) {
-      const msg = err?.message || 'Network error';
-      this.logger.warn(`Email delivery error (${subject}): ${msg}`);
-      return { sent: false, error: msg };
-    }
+    return this.db.executeWithTenantContext(tenantId, async (client) => {
+      const res = await client.query(
+        `SELECT i.id, i.email, r.name AS role_name, i.department, i.expires_at, i.accepted_at, i.created_at
+         FROM invitations i
+         JOIN roles r ON r.id = i.role_id
+         WHERE i.tenant_id = $1::uuid
+         ORDER BY i.created_at DESC
+         LIMIT 50`,
+        [tenantId],
+      );
+      return res.rows;
+    });
   }
 
   /**
-   * 6. Accept Employee Invitation
+   * 5.2 Validate invitation token metadata (public, read-only, never exposes token)
    */
-  async acceptInvite(dto: AcceptInviteDto) {
+  async getInviteInfo(rawToken: string) {
+    if (!rawToken || rawToken.trim().length < 16) {
+      throw new BadRequestException('Invalid invitation token.');
+    }
+    const tokenHash = crypto.createHash('sha256').update(rawToken.trim()).digest('hex');
+
+    const inviteRes = await this.db.executeAsSuperAdmin(async (client) => {
+      return client.query(
+        `SELECT i.email, i.department, i.expires_at, i.accepted_at,
+                r.name AS role_name,
+                t.name AS workspace_name, t.status AS tenant_status,
+                (to_jsonb(t)->>'deleted_at') AS tenant_deleted_at
+         FROM invitations i
+         JOIN roles r ON r.id = i.role_id
+         JOIN tenants t ON t.id = i.tenant_id
+         WHERE i.token_hash = $1
+         LIMIT 1`,
+        [tokenHash],
+      );
+    });
+
+    if (inviteRes.rows.length === 0) {
+      throw new BadRequestException('Invalid or revoked invitation token.');
+    }
+    const invite = inviteRes.rows[0];
+    if (invite.tenant_deleted_at || invite.tenant_status === 'Archived') {
+      throw new ForbiddenException('This company workspace has been archived.');
+    }
+    if (invite.accepted_at) {
+      throw new BadRequestException('This invitation has already been accepted.');
+    }
+    if (new Date(invite.expires_at) < new Date()) {
+      throw new BadRequestException('Invitation has expired. Please request a new invitation.');
+    }
+
+    return {
+      valid: true,
+      email: invite.email,
+      workspace_name: invite.workspace_name,
+      role_name: invite.role_name,
+      department: invite.department,
+      expires_at: invite.expires_at,
+    };
+  }
+
+  /**
+   * 6. Accept Employee Invitation (atomic, single-use, establishes authenticated session)
+   */
+  async acceptInvite(
+    dto: AcceptInviteDto,
+    ipAddress = '127.0.0.1',
+    userAgent = 'Unknown',
+  ) {
     const tokenHash = crypto.createHash('sha256').update(dto.token.trim()).digest('hex');
 
     const inviteRes = await this.db.executeAsSuperAdmin(async (client) => {
@@ -913,7 +1046,8 @@ export class AuthService {
                 t.status as tenant_status, (to_jsonb(t)->>'deleted_at') as tenant_deleted_at
          FROM invitations i
          JOIN tenants t ON t.id = i.tenant_id
-         WHERE i.token_hash = $1`,
+         WHERE i.token_hash = $1
+         LIMIT 1`,
         [tokenHash]
       );
     });
@@ -922,50 +1056,172 @@ export class AuthService {
       throw new BadRequestException('Invalid invitation token.');
     }
 
-    const invite = inviteRes.rows[0];
-    if (invite.tenant_deleted_at || invite.tenant_status === 'Archived') {
+    const initialInvite = inviteRes.rows[0];
+    if (initialInvite.tenant_deleted_at || initialInvite.tenant_status === 'Archived') {
       throw new ForbiddenException('This company workspace has been archived and can no longer accept invitations.');
     }
-    if (invite.accepted_at) {
-      throw new BadRequestException('This invitation has already been accepted.');
-    }
-    if (new Date(invite.expires_at) < new Date()) {
-      throw new BadRequestException('Invitation has expired. Please contact your company administrator.');
-    }
 
-    return this.db.executeWithTenantContext(invite.tenant_id, async (client) => {
-      // Check if user already exists
+    const acceptedUserId = await this.db.executeWithTenantContext(initialInvite.tenant_id, async (client) => {
+      // Lock tenant row to serialize concurrent seat activation checks
+      await client.query(`SELECT id FROM tenants WHERE id = $1::uuid FOR UPDATE`, [initialInvite.tenant_id]);
+
+      // Lock invitation row inside transaction to prevent concurrent reuse
+      const lockedRes = await client.query(
+        `SELECT id, tenant_id, email, role_id, department, expires_at, accepted_at
+         FROM invitations
+         WHERE id = $1::uuid
+         FOR UPDATE`,
+        [initialInvite.id],
+      );
+      const invite = lockedRes.rows[0];
+      if (!invite) {
+        throw new BadRequestException('Invalid invitation token.');
+      }
+      if (invite.accepted_at) {
+        throw new BadRequestException('This invitation has already been accepted.');
+      }
+      if (new Date(invite.expires_at) < new Date()) {
+        throw new BadRequestException('Invitation has expired. Please contact your company administrator.');
+      }
+
+      // Check if user already exists (never overwrite existing password or reactivate disabled account)
       let userId: string;
-      const userRes = await client.query('SELECT id FROM users WHERE email = $1', [invite.email]);
+      let isExistingUser = false;
+      const userRes = await client.query(
+        'SELECT id, is_active FROM users WHERE email = $1',
+        [invite.email],
+      );
       if (userRes.rows.length === 0) {
         const passwordHash = await this.crypto.hashPassword(dto.password);
         const newUser = await client.query(
           `INSERT INTO users (email, password_hash, full_name, is_super_admin, is_platform_owner, is_active, email_verified_at)
            VALUES ($1, $2, $3, false, false, true, NOW())
            RETURNING id;`,
-          [invite.email, passwordHash, dto.full_name.trim()]
+          [invite.email, passwordHash, dto.full_name.trim()],
         );
         userId = newUser.rows[0].id;
       } else {
-        userId = userRes.rows[0].id;
+        isExistingUser = true;
+        const existingUser = userRes.rows[0];
+        if (!existingUser.is_active) {
+          throw new ForbiddenException(
+            'This account has been deactivated and cannot accept workspace invitations.',
+          );
+        }
+        userId = existingUser.id;
       }
 
-      // Add to tenant_memberships
+      // Enforce max_users seat limit before activating membership
+      const subRes = await client.query(
+        `SELECT sp.name AS plan_name, sp.max_users
+         FROM tenant_subscriptions ts
+         JOIN subscription_plans sp ON sp.id = ts.plan_id
+         WHERE ts.tenant_id = $1::uuid
+           AND (
+             (UPPER(ts.status) IN ('ACTIVE', 'TRIALING') AND (ts.current_period_end IS NULL OR ts.current_period_end >= NOW() OR (ts.grace_period_end IS NOT NULL AND ts.grace_period_end > NOW())))
+             OR (UPPER(ts.status) = 'PAST_DUE' AND ts.grace_period_end IS NOT NULL AND ts.grace_period_end > NOW())
+           )
+         ORDER BY ts.updated_at DESC NULLS LAST, ts.created_at DESC
+         LIMIT 1`,
+        [invite.tenant_id],
+      );
+      const activeSub = subRes.rows[0];
+      if (!activeSub) {
+        throw new ForbiddenException('This workspace does not have an active subscription plan.');
+      }
+      const maxUsers = Number(activeSub.max_users);
+      if (maxUsers !== -1) {
+        const activeRes = await client.query(
+          `SELECT COUNT(*)::int AS active_users
+           FROM tenant_memberships
+           WHERE tenant_id = $1::uuid AND status = 'Active' AND user_id <> $2::uuid`,
+          [invite.tenant_id, userId],
+        );
+        if (Number(activeRes.rows[0]?.active_users ?? 0) >= maxUsers) {
+          throw new ForbiddenException(
+            `Workspace seat limit (${maxUsers}) has been reached for the ${activeSub.plan_name} plan. Please contact your administrator.`,
+          );
+        }
+      }
+
+      // Add or activate membership in tenant_memberships
       await client.query(
         `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
          VALUES ($1, $2, $3, $4, 'Active')
-         ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
-        [invite.tenant_id, userId, invite.role_id, invite.department]
+         ON CONFLICT (tenant_id, user_id) DO UPDATE SET
+           role_id = EXCLUDED.role_id,
+           department = EXCLUDED.department,
+           status = 'Active',
+           updated_at = NOW();`,
+        [invite.tenant_id, userId, invite.role_id, invite.department],
       );
 
-      // Mark invitation accepted
-      await client.query('UPDATE invitations SET accepted_at = NOW() WHERE id = $1', [invite.id]);
+      // Mark invitation accepted atomically
+      await client.query('UPDATE invitations SET accepted_at = NOW() WHERE id = $1::uuid', [invite.id]);
+
+      await client.query(
+        `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, tenant_id, reason, ip_address)
+         VALUES ($1::uuid, $2, 'USER', 'INVITATION_ACCEPTED', 'USER', $3, $4::uuid, 'Employee accepted workspace invitation', $5)`,
+        [userId, invite.email, userId, invite.tenant_id, ipAddress],
+      );
+
+      return { userId, isExistingUser };
+    });
+
+    const { userId, isExistingUser } = acceptedUserId;
+
+    // Enforce MFA if existing user has MFA enabled (never bypass MFA)
+    if (isExistingUser) {
+      const mfaRes = await this.db.query(
+        `SELECT is_enabled FROM user_mfa_configs WHERE user_id = $1::uuid LIMIT 1`,
+        [userId],
+      );
+      if (mfaRes.rows[0]?.is_enabled) {
+        try {
+          const mfaToken = `mfa_tok_${this.crypto.generateToken(24)}`;
+          await this.redis.setex(
+            `mfa:pending:${mfaToken}`,
+            300,
+            JSON.stringify({ userId, email: initialInvite.email }),
+          );
+          return {
+            success: true,
+            mfa_required: true,
+            mfa_token: mfaToken,
+            message: 'Invitation accepted. Complete MFA verification to access your workspace.',
+          };
+        } catch (err: any) {
+          this.logger.warn(`MFA pending token creation failed after invite acceptance: ${err?.message || 'Redis error'}`);
+          return {
+            success: true,
+            session_pending: true,
+            message: 'Invitation accepted. Please sign in normally to complete MFA verification.',
+          };
+        }
+      }
+    }
+
+    try {
+      const session = await this.sessionService.createSession(
+        userId,
+        initialInvite.tenant_id,
+        ipAddress,
+        userAgent,
+      );
 
       return {
         success: true,
-        message: 'Invitation accepted successfully. You may now sign in to your company workspace.',
+        message: 'Invitation accepted successfully. Welcome to your company workspace.',
+        session,
       };
-    });
+    } catch (err: any) {
+      this.logger.warn(`Session creation failed after invite acceptance: ${err?.message || 'Session store error'}`);
+      return {
+        success: true,
+        session_pending: true,
+        message: 'Invitation accepted, but automatic sign-in is temporarily unavailable. Please sign in with your credentials.',
+      };
+    }
   }
 
   /**

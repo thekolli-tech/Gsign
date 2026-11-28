@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './auth/auth.module';
 import { TenantsModule } from './tenants/tenants.module';
@@ -22,6 +23,7 @@ import { DocumentsModule } from './documents/documents.module';
     }),
     DatabaseModule,
     RedisModule,
+    NotificationsModule,
     HealthModule,
     AuthModule,
     TenantsModule,

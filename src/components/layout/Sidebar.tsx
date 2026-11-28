@@ -14,14 +14,13 @@ import {
   Plug,
   ShieldAlert,
   ToggleLeft,
+  Inbox,
   ShieldCheck,
-  ChevronRight,
   ExternalLink,
   LogOut,
   X
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { api } from '../../services/api';
 import gsignLogo from '../../assets/gsign_logo.png';
 
 interface SidebarProps {
@@ -33,10 +32,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => 
   const { 
     activeView, 
     setActiveView, 
-    currentRole, 
-    setCurrentRole, 
+    currentRole,
     currentUser,
-    setCurrentUser,
+    logout,
     branding, 
     agreements,
     setRecipientModalOpen,
@@ -91,6 +89,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => 
       label: 'Feature Flags', 
       icon: <ToggleLeft size={17} />, 
       onClick: () => setActiveView('superadmin_flags') 
+    },
+    {
+      id: 'superadmin_sales_inquiries',
+      label: 'Sales Inquiries',
+      icon: <Inbox size={17} />,
+      onClick: () => setActiveView('superadmin_sales_inquiries')
     },
   ];
 
@@ -228,11 +232,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen = false, onClose }) => 
         <button
           type="button"
           onClick={async () => {
-            await api.logout().catch(() => {});
-            sessionStorage.removeItem('gsign_active_view');
-            setCurrentUser(null);
-            setCurrentRole('company_admin');
-            setActiveView('signin');
+            await logout();
             addToast('Signed Out', 'Your session has been ended.', 'info');
           }}
           className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 dark:hover:bg-rose-950/40 dark:hover:text-rose-400 dark:hover:border-rose-900/60 transition-colors cursor-pointer"

@@ -24,80 +24,9 @@ export class TemplatesService {
 
   private async ensureTemplatesSchema(client: any) {
     if (this.schemaVerified) return;
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS templates (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
-        is_global BOOLEAN NOT NULL DEFAULT TRUE,
-        created_by UUID NOT NULL REFERENCES users(id),
-        name VARCHAR(128) NOT NULL,
-        category VARCHAR(64) NOT NULL DEFAULT 'Offer Letter',
-        department VARCHAR(64) NOT NULL DEFAULT 'HR',
-        description TEXT NOT NULL DEFAULT '',
-        status VARCHAR(32) NOT NULL DEFAULT 'Draft',
-        current_version INTEGER NOT NULL DEFAULT 1,
-        published_version INTEGER,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      ALTER TABLE templates ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT TRUE;
-      ALTER TABLE templates ALTER COLUMN tenant_id DROP NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_templates_tenant_id ON templates(tenant_id);
-      CREATE INDEX IF NOT EXISTS idx_templates_status ON templates(status);
-
-      CREATE TABLE IF NOT EXISTS template_versions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
-        template_id UUID NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
-        version_number INTEGER NOT NULL,
-        status VARCHAR(32) NOT NULL DEFAULT 'Draft',
-        content TEXT NOT NULL,
-        fields_json JSONB NOT NULL DEFAULT '[]',
-        created_by UUID NOT NULL REFERENCES users(id),
-        published_by UUID REFERENCES users(id),
-        published_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CONSTRAINT uq_template_version UNIQUE (template_id, version_number)
-      );
-      ALTER TABLE template_versions ALTER COLUMN tenant_id DROP NOT NULL;
-      CREATE INDEX IF NOT EXISTS idx_template_versions_tenant_id ON template_versions(tenant_id);
-      CREATE INDEX IF NOT EXISTS idx_template_versions_template_id ON template_versions(template_id);
-
-      ALTER TABLE templates ENABLE ROW LEVEL SECURITY;
-      ALTER TABLE templates FORCE ROW LEVEL SECURITY;
-      ALTER TABLE template_versions ENABLE ROW LEVEL SECURITY;
-      ALTER TABLE template_versions FORCE ROW LEVEL SECURITY;
-
-      DROP POLICY IF EXISTS tenant_isolation_templates ON templates;
-      CREATE POLICY tenant_isolation_templates ON templates
-      FOR ALL
-      USING (
-        NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
-        OR is_global = true
-        OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
-      )
-      WITH CHECK (
-        NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
-        OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
-      );
-
-      DROP POLICY IF EXISTS tenant_isolation_template_versions ON template_versions;
-      CREATE POLICY tenant_isolation_template_versions ON template_versions
-      FOR ALL
-      USING (
-        NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
-        OR EXISTS (
-          SELECT 1 FROM templates t
-          WHERE t.id = template_versions.template_id AND t.is_global = true
-        )
-        OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
-      )
-      WITH CHECK (
-        NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
-        OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
-      );
-    `);
+    // Schema and RLS policies are managed by migrations (schema.sql); verify table readiness only.
+    await client.query(`SELECT 1 FROM templates LIMIT 0;`);
+    await client.query(`SELECT 1 FROM template_versions LIMIT 0;`);
     this.schemaVerified = true;
   }
 

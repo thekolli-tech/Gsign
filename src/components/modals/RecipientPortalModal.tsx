@@ -10,9 +10,31 @@ import {
   Mail,
   AlertTriangle,
   Clock,
+  ZoomIn,
+  ZoomOut,
+  ChevronLeft,
+  ChevronRight,
+  ShieldCheck,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../services/api';
+import { ThumbImpressionCapture, CapturedThumbImpression } from '../signing/ThumbImpressionCapture';
+import {
+  BiometricCapabilitiesResponse,
+  RecipientSigningMethodId,
+  base64UrlToUint8Array,
+  bufferToBase64Url,
+  getSigningMethodOptions,
+} from '../../utils/biometricSigning';
+import {
+  DEFAULT_RECIPIENT_FIELDS,
+  RecipientFieldValue,
+  clampZoomLevel,
+  paginateDocumentContent,
+  computeSigningProgress,
+  validateRecipientFieldResponses,
+  getCompletionBannerState,
+} from '../../utils/recipientSigning';
 import { jsPDF } from 'jspdf';
 
 export const RecipientPortalModal: React.FC = () => {
@@ -43,6 +65,18 @@ export const RecipientPortalModal: React.FC = () => {
   const [isDrawing, setIsDrawing] = useState(false);
   const [hasDrawn, setHasDrawn] = useState(false);
   const [consentChecked, setConsentChecked] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [zoomLevel, setZoomLevel] = useState(100);
+  const [fieldResponses, setFieldResponses] = useState<Record<string, RecipientFieldValue>>(() => ({
+    'rec-date': { value: new Date().toISOString().slice(0, 10) },
+  }));
+  const [submitResult, setSubmitResult] = useState<any>(null);
+  const [biometricCapabilities, setBiometricCapabilities] = useState<BiometricCapabilitiesResponse | null>(null);
+  const [selectedSigningMethod, setSelectedSigningMethod] = useState<RecipientSigningMethodId>('basic_drawn');
+  const [thumbImpression, setThumbImpression] = useState<CapturedThumbImpression | null>(null);
+  const [biometricToken, setBiometricToken] = useState<string | null>(null);
+  const [biometricVerifying, setBiometricVerifying] = useState(false);
+  const [biometricError, setBiometricError] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -53,8 +87,12 @@ export const RecipientPortalModal: React.FC = () => {
     setLoadingPortal(true);
     setPortalError(null);
     try {
-      const data = await api.getSigningPortalByToken(token);
+      const [data, caps] = await Promise.all([
+        api.getSigningPortalByToken(token),
+        api.getBiometricCapabilities(token).catch(() => null),
+      ]);
       setPortalData(data);
+      setBiometricCapabilities(caps);
       if (data.portal_status === 'READY_TO_SIGN') {
         setStep(2);
       } else if (data.portal_status === 'ALREADY_SIGNED') {
@@ -77,6 +115,14 @@ export const RecipientPortalModal: React.FC = () => {
       setHasDrawn(false);
       setShowRejectBox(false);
       setRejectReason('');
+      setCurrentPage(1);
+      setZoomLevel(100);
+      setSubmitResult(null);
+      setSelectedSigningMethod('basic_drawn');
+      setThumbImpression(null);
+      setBiometricToken(null);
+      setBiometricError(null);
+      setFieldResponses({ 'rec-date': { value: new Date().toISOString().slice(0, 10) } });
       loadPortal(signingToken);
     }
   }, [recipientModalOpen, signingToken, loadPortal]);
@@ -215,11 +261,69 @@ export const RecipientPortalModal: React.FC = () => {
     setHasDrawn(false);
   };
 
+  const handleDeviceBiometricVerify = async () => {
+    if (!signingToken) return;
+    setBiometricError(null);
+    setBiometricVerifying(true);
+    try {
+      const chal = await api.requestBiometricChallenge(signingToken);
+      if (typeof window === 'undefined' || !window.PublicKeyCredential || !navigator.credentials?.get) {
+        throw new Error('Device Biometric / Passkey Verification is not supported in this browser.');
+      }
+      const assertion = (await navigator.credentials.get({
+        publicKey: {
+          challenge: base64UrlToUint8Array(chal.challenge) as BufferSource,
+          rpId: chal.rp_id,
+          userVerification: 'required',
+          timeout: chal.timeout || 60000,
+        },
+      })) as PublicKeyCredential | null;
+
+      if (!assertion || !assertion.response) {
+        throw new Error('Device biometric verification was cancelled or returned no credential.');
+      }
+      const resp = assertion.response as AuthenticatorAssertionResponse;
+      const verified = await api.verifyBiometricAssertion(signingToken, {
+        challenge_id: chal.challenge_id,
+        credential_id: assertion.id,
+        client_data_json: bufferToBase64Url(resp.clientDataJSON),
+        authenticator_data: bufferToBase64Url(resp.authenticatorData),
+        signature: bufferToBase64Url(resp.signature),
+      });
+      setBiometricToken(verified.biometric_verification_token);
+      addToast('Device Verified', 'Device Biometric / Passkey Verification succeeded.', 'success');
+    } catch (err: any) {
+      const msg =
+        err?.name === 'NotAllowedError'
+          ? 'Device verification was cancelled or timed out.'
+          : err?.message || 'Device biometric verification failed.';
+      setBiometricError(msg);
+      setBiometricToken(null);
+      addToast('Verification Failed', msg, 'error');
+    } finally {
+      setBiometricVerifying(false);
+    }
+  };
+
   const handleSignAndSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!signingToken) return;
-    if (!hasDrawn) {
+    const fieldCheck = validateRecipientFieldResponses(DEFAULT_RECIPIENT_FIELDS, fieldResponses);
+    if (!fieldCheck.valid) {
+      addToast('Required Fields Missing', fieldCheck.errors[0], 'warning');
+      return;
+    }
+    if (selectedSigningMethod === 'digital_thumb_impression') {
+      if (!thumbImpression?.data_url) {
+        addToast('Thumb Impression Required', 'Please capture or upload your thumb impression before submitting.', 'warning');
+        return;
+      }
+    } else if (!hasDrawn) {
       addToast('Signature Required', 'Please draw your signature before submitting', 'warning');
+      return;
+    }
+    if (selectedSigningMethod === 'device_biometric' && !biometricToken) {
+      addToast('Verification Required', 'Please complete Device Biometric / Passkey Verification first.', 'warning');
       return;
     }
     if (!consentChecked) {
@@ -227,14 +331,41 @@ export const RecipientPortalModal: React.FC = () => {
       return;
     }
 
-    const sigData = canvasRef.current ? canvasRef.current.toDataURL('image/png') : '';
+    const sigData =
+      selectedSigningMethod === 'digital_thumb_impression' && thumbImpression
+        ? thumbImpression.data_url
+        : canvasRef.current
+          ? canvasRef.current.toDataURL('image/png')
+          : '';
+    const consentText =
+      selectedSigningMethod === 'digital_thumb_impression'
+        ? `I have read the full agreement and consent to include my captured ${thumbImpression?.thumb_type || 'right'} digital thumb impression in this agreement.`
+        : 'I have read the full agreement and consent to sign it electronically.';
+
     setSubmitting(true);
     try {
       const res = await api.submitSigningSignature(signingToken, {
         signature_data_url: sigData,
         consent_accepted: true,
-        consent_text: 'I have read the full agreement and consent to sign it electronically.',
+        consent_text: consentText,
+        signing_method:
+          selectedSigningMethod === 'basic_drawn' ||
+          selectedSigningMethod === 'otp_verified' ||
+          selectedSigningMethod === 'digital_thumb_impression' ||
+          selectedSigningMethod === 'device_biometric'
+            ? selectedSigningMethod
+            : 'basic_drawn',
+        thumb_impression:
+          selectedSigningMethod === 'digital_thumb_impression' && thumbImpression
+            ? thumbImpression
+            : undefined,
+        biometric_verification_token:
+          selectedSigningMethod === 'device_biometric' && biometricToken
+            ? biometricToken
+            : undefined,
+        field_responses: fieldCheck.payloads,
       });
+      setSubmitResult(res);
       setStep(3);
       addToast(
         'Signature Recorded',
@@ -345,11 +476,20 @@ export const RecipientPortalModal: React.FC = () => {
     ['REVOKED', 'EXPIRED', 'REJECTED', 'CANCELLED', 'WAITING_PREDECESSOR'].includes(portalStatus);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Recipient Signing Portal"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && !submitting) handleClose();
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60"
+    >
       {/* Top Device switcher & Close button bar */}
       <div className="absolute top-4 right-4 flex items-center gap-2.5 z-50">
         <div className="flex items-center bg-slate-900 border border-slate-700 rounded-lg p-0.5 text-slate-300 text-xs">
           <button
+            type="button"
             onClick={() => setDeviceMode('mobile')}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded font-medium transition-colors ${
               deviceMode === 'mobile' ? 'bg-slate-700 text-white' : 'hover:text-white'
@@ -359,6 +499,7 @@ export const RecipientPortalModal: React.FC = () => {
             <span>Mobile</span>
           </button>
           <button
+            type="button"
             onClick={() => setDeviceMode('desktop')}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded font-medium transition-colors ${
               deviceMode === 'desktop' ? 'bg-slate-700 text-white' : 'hover:text-white'
@@ -370,6 +511,8 @@ export const RecipientPortalModal: React.FC = () => {
         </div>
 
         <button
+          type="button"
+          aria-label="Close signing portal"
           onClick={handleClose}
           className="p-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-400 hover:text-white transition-colors"
         >
@@ -379,9 +522,9 @@ export const RecipientPortalModal: React.FC = () => {
 
       {/* Main Container: Mobile Frame vs Desktop */}
       <div
-        className={`w-full transition-all ${
+        className={`w-full max-h-[90vh] overflow-y-auto transition-all ${
           deviceMode === 'mobile'
-            ? 'max-w-[390px] rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-modal overflow-hidden'
+            ? 'max-w-[390px] rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-modal'
             : 'max-w-xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-modal p-6 sm:p-8'
         }`}
       >
@@ -570,10 +713,198 @@ export const RecipientPortalModal: React.FC = () => {
                   </span>
                 </div>
 
-                <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 leading-relaxed max-h-32 overflow-y-auto">
-                  {activeAgreement?.content}
+                {(() => {
+                  const pages = paginateDocumentContent(activeAgreement?.content || '');
+                  const safePage = Math.min(currentPage, pages.length);
+                  const progress = computeSigningProgress(portalData?.recipients_progress);
+                  return (
+                    <div className="space-y-2">
+                      {progress.totalSigners > 0 && (
+                        <div className="flex items-center justify-between text-[11px] px-2.5 py-1.5 rounded-md bg-brand-50/70 dark:bg-brand-950/30 border border-brand-200 dark:border-brand-800/50 text-brand-700 dark:text-brand-300">
+                          <span>
+                            Signing progress: {progress.signedCount} of {progress.totalSigners} required signer(s)
+                          </span>
+                          <span className="font-mono font-semibold">{progress.percentComplete}%</span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            aria-label="Previous page"
+                            disabled={safePage <= 1}
+                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                            className="p-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40"
+                          >
+                            <ChevronLeft size={12} />
+                          </button>
+                          <span className="font-mono px-1">
+                            Page {safePage} / {pages.length}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label="Next page"
+                            disabled={safePage >= pages.length}
+                            onClick={() => setCurrentPage((p) => Math.min(pages.length, p + 1))}
+                            className="p-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40"
+                          >
+                            <ChevronRight size={12} />
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            aria-label="Zoom out"
+                            disabled={zoomLevel <= 75}
+                            onClick={() => setZoomLevel((z) => clampZoomLevel(z - 25))}
+                            className="p-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40"
+                          >
+                            <ZoomOut size={12} />
+                          </button>
+                          <span className="font-mono w-10 text-center">{zoomLevel}%</span>
+                          <button
+                            type="button"
+                            aria-label="Zoom in"
+                            disabled={zoomLevel >= 150}
+                            onClick={() => setZoomLevel((z) => clampZoomLevel(z + 25))}
+                            className="p-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40"
+                          >
+                            <ZoomIn size={12} />
+                          </button>
+                        </div>
+                      </div>
+                      <div
+                        style={{ fontSize: `${Math.round((12 * zoomLevel) / 100)}px` }}
+                        className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 leading-relaxed max-h-36 overflow-y-auto whitespace-pre-wrap"
+                      >
+                        {pages[safePage - 1]}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Assigned Recipient Fields */}
+                <div className="space-y-2 p-3 rounded-lg bg-slate-50/70 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800">
+                  <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                    Your Assigned Fields
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {DEFAULT_RECIPIENT_FIELDS.filter((f) => f.type !== 'Checkbox').map((field) => (
+                      <div key={field.id}>
+                        <label className="text-[10px] font-medium text-slate-600 dark:text-slate-400 block mb-0.5">
+                          {field.label} {field.required ? '*' : ''}
+                        </label>
+                        <input
+                          type={field.type === 'Date' ? 'date' : 'text'}
+                          value={fieldResponses[field.id]?.value || ''}
+                          placeholder={field.type === 'Initials' ? 'e.g. AV' : ''}
+                          onChange={(e) =>
+                            setFieldResponses((prev) => ({
+                              ...prev,
+                              [field.id]: { ...prev[field.id], value: e.target.value },
+                            }))
+                          }
+                          className="w-full px-2 py-1 text-xs rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {DEFAULT_RECIPIENT_FIELDS.filter((f) => f.type === 'Checkbox').map((field) => (
+                    <label key={field.id} className="flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-400 cursor-pointer pt-1">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(fieldResponses[field.id]?.checked)}
+                        onChange={(e) =>
+                          setFieldResponses((prev) => ({
+                            ...prev,
+                            [field.id]: { ...prev[field.id], checked: e.target.checked },
+                          }))
+                        }
+                        className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-brand-600"
+                      />
+                      <span>
+                        {field.label} {field.required ? '*' : ''}
+                      </span>
+                    </label>
+                  ))}
                 </div>
 
+                {/* Signing Method Selector */}
+                <div className="space-y-1.5">
+                  <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                    Select Signing Method
+                  </div>
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                    {getSigningMethodOptions({ capabilities: biometricCapabilities }).map((opt) => {
+                      const active = selectedSigningMethod === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          disabled={!opt.available}
+                          onClick={() => setSelectedSigningMethod(opt.id)}
+                          className={`w-full text-left p-2 rounded-lg border text-[11px] transition-colors ${
+                            !opt.available
+                              ? 'opacity-55 cursor-not-allowed border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40'
+                              : active
+                                ? 'border-brand-600 bg-brand-50/40 dark:bg-brand-950/30'
+                                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-slate-900 dark:text-white">{opt.label}</span>
+                            {!opt.available && (
+                              <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                                Unavailable
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            {opt.available ? opt.description : opt.unavailableReason}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {selectedSigningMethod === 'device_biometric' && (
+                  <div className="p-3 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50/30 dark:bg-brand-950/20 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <ShieldCheck size={14} className="text-brand-600" />
+                        Device Biometric / Passkey Verification
+                      </span>
+                      {biometricToken && (
+                        <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded">
+                          Verified
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                      Uses your device passkey or OS user verification (Touch ID, Face ID, Windows Hello, or PIN). Verification alone does not sign until you consent and submit below.
+                    </p>
+                    {biometricError && (
+                      <div className="text-[11px] text-rose-600 dark:text-rose-400">{biometricError}</div>
+                    )}
+                    <button
+                      type="button"
+                      disabled={biometricVerifying}
+                      onClick={handleDeviceBiometricVerify}
+                      className="w-full py-1.5 rounded-md bg-brand-600 hover:bg-brand-700 text-white text-xs font-medium disabled:opacity-50"
+                    >
+                      {biometricVerifying
+                        ? 'Verifying Device...'
+                        : biometricToken
+                          ? 'Re-verify Device'
+                          : 'Verify with Device Passkey'}
+                    </button>
+                  </div>
+                )}
+
+                {selectedSigningMethod === 'digital_thumb_impression' ? (
+                  <ThumbImpressionCapture value={thumbImpression} onChange={setThumbImpression} />
+                ) : (
                 <div className="space-y-1.5 pt-1">
                   <div className="flex items-center justify-between">
                     <h4 className="text-xs font-semibold text-slate-900 dark:text-white">
@@ -611,6 +942,7 @@ export const RecipientPortalModal: React.FC = () => {
                     )}
                   </div>
                 </div>
+                )}
 
                 <div className="flex items-start gap-2 pt-1">
                   <input
@@ -621,12 +953,30 @@ export const RecipientPortalModal: React.FC = () => {
                     className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
                   />
                   <label htmlFor="consent-check" className="text-[11px] text-slate-600 dark:text-slate-400 leading-normal cursor-pointer">
-                    I have read the full agreement and consent to sign it electronically.
+                    {selectedSigningMethod === 'digital_thumb_impression'
+                      ? `I have read the full agreement and consent to include my captured ${thumbImpression?.thumb_type || 'right'} digital thumb impression in the executed agreement.`
+                      : 'I have read the full agreement and consent to sign it electronically.'}
                   </label>
                 </div>
 
                 <div className="text-[10px] text-slate-400">
-                  Basic electronic signature · Email OTP verified
+                  Method: {selectedSigningMethod.replace(/_/g, ' ')} · Email OTP verified
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800 flex items-center justify-between text-[11px]">
+                  <span className="text-slate-600 dark:text-slate-400">
+                    Required steps: {Number(selectedSigningMethod === 'digital_thumb_impression' ? Boolean(thumbImpression) : hasDrawn) + Number(consentChecked)} of 2 completed
+                  </span>
+                  <div className="flex items-center gap-2 font-medium">
+                    <span className={(selectedSigningMethod === 'digital_thumb_impression' ? Boolean(thumbImpression) : hasDrawn) ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                      {(selectedSigningMethod === 'digital_thumb_impression' ? Boolean(thumbImpression) : hasDrawn)
+                        ? selectedSigningMethod === 'digital_thumb_impression' ? '✓ Thumb Impression' : '✓ Signature'
+                        : selectedSigningMethod === 'digital_thumb_impression' ? '• Thumb Impression' : '• Signature'}
+                    </span>
+                    <span className={consentChecked ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                      {consentChecked ? '✓ Consent' : '• Consent'}
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -682,54 +1032,70 @@ export const RecipientPortalModal: React.FC = () => {
           )}
 
           {/* STEP 3: AGREEMENT SIGNED */}
-          {!loadingPortal && !portalError && !isBlockedStatus && step === 3 && (
-            <div className="flex flex-col justify-between flex-1 space-y-6">
-              <div className="space-y-5 pt-1">
-                <div className="flex items-center gap-2">
-                  {branding.logoUrl ? (
-                    <img src={branding.logoUrl} alt={brandTitle} className="h-6 max-w-[120px] object-contain" />
-                  ) : null}
-                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                    {brandTitle}
-                  </h3>
-                </div>
+          {!loadingPortal && !portalError && !isBlockedStatus && step === 3 && (() => {
+            const completion = getCompletionBannerState({ submitResult, portalData });
+            return (
+              <div className="flex flex-col justify-between flex-1 space-y-6">
+                <div className="space-y-5 pt-1">
+                  <div className="flex items-center gap-2">
+                    {branding.logoUrl ? (
+                      <img src={branding.logoUrl} alt={brandTitle} className="h-6 max-w-[120px] object-contain" />
+                    ) : null}
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                      {brandTitle}
+                    </h3>
+                  </div>
 
-                <div className="flex justify-start">
-                  <div className="w-12 h-12 rounded-full bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-                    <Check size={24} strokeWidth={2.5} />
+                  <div className="flex justify-start">
+                    <div
+                      className={`w-12 h-12 rounded-full border flex items-center justify-center ${
+                        completion.isCompleted
+                          ? 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400'
+                          : 'bg-brand-50 dark:bg-brand-950/60 border-brand-200 dark:border-brand-800 text-brand-600 dark:text-brand-400'
+                      }`}
+                    >
+                      {completion.isCompleted ? <Check size={24} strokeWidth={2.5} /> : <Clock size={22} />}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <h2 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+                      {completion.headline}
+                    </h2>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                      {completion.subtext}
+                    </p>
+                  </div>
+
+                  {!completion.isCompleted && completion.nextSigner && (
+                    <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-[11px] text-amber-900 dark:text-amber-200">
+                      Next required signer (#{completion.nextSigner.signing_order}):{' '}
+                      <strong>{completion.nextSigner.name}</strong> ({completion.nextSigner.email})
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleDownloadSignedPDF}
+                    className="w-full py-2.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle flex items-center justify-center gap-1.5"
+                  >
+                    <Download size={13} />
+                    <span>{completion.isCompleted ? 'Download Signed PDF' : 'Download Signed Copy'}</span>
+                  </button>
+
+                  <div className="text-[11px] font-mono text-slate-400">
+                    {activeAgreement?.agreement_number || activeAgreement?.id} · Status: {completion.status}
                   </div>
                 </div>
 
-                <div className="space-y-1">
-                  <h2 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">
-                    Agreement signed
-                  </h2>
-                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                    Your electronic signature has been recorded and verified for {brandTitle}.
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleDownloadSignedPDF}
-                  className="w-full py-2.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle flex items-center justify-center gap-1.5"
-                >
-                  <Download size={13} />
-                  <span>Download PDF</span>
-                </button>
-
-                <div className="text-[11px] font-mono text-slate-400">
-                  {activeAgreement?.agreement_number || activeAgreement?.id} · Basic electronic signature
+                <div className="text-center pt-6 border-t border-slate-100 dark:border-slate-800">
+                  <span className="text-[11px] text-slate-400">
+                    Powered by Genemax Sign
+                  </span>
                 </div>
               </div>
-
-              <div className="text-center pt-6 border-t border-slate-100 dark:border-slate-800">
-                <span className="text-[11px] text-slate-400">
-                  Powered by Genemax Sign
-                </span>
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       </div>
     </div>

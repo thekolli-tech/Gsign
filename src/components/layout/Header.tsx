@@ -10,7 +10,6 @@ import {
   Menu
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { api } from '../../services/api';
 
 interface HeaderProps {
   onOpenMenu?: () => void;
@@ -26,11 +25,13 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMenu }) => {
     agreements,
     setSelectedAgreementId,
     setActiveView,
-    setCurrentRole,
+    currentRole,
     currentUser,
-    setCurrentUser,
+    logout,
     addToast
   } = useApp();
+
+  const isRootAdmin = currentRole === 'platform_owner' || currentRole === 'super_admin';
 
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
@@ -67,7 +68,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMenu }) => {
       case 'agreement_detail':
         return { main: 'Agreement Details', sub: 'Audit trail and verification' };
       case 'templates':
-        return { main: 'Employment Offer Letter', sub: 'Draft · v3' };
+        return { main: 'Templates', sub: 'Reusable agreement templates and clauses' };
       case 'documents_receipts':
         return { main: 'Documents & Receipts', sub: 'Receipts are issued only after confirmed payment' };
       case 'reports':
@@ -77,7 +78,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMenu }) => {
       case 'branding_domain':
         return { main: 'Branding & Domain', sub: 'Your customers see your brand, not ours' };
       case 'subscription':
-        return { main: 'Subscription', sub: 'Business plan · renews 24 Dec 2026' };
+        return { main: 'Subscription', sub: 'Manage your active plan, usage quota & billing invoices' };
       case 'superadmin_tenants':
         return { main: 'Tenants', sub: 'Genemax IT Solution · All customer companies' };
       case 'superadmin_pricing':
@@ -90,6 +91,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMenu }) => {
         return { main: 'Support Access', sub: 'Genemax IT Solution · Audit-logged, time-boxed workspace support sessions' };
       case 'superadmin_flags':
         return { main: 'Feature Flags', sub: 'Genemax IT Solution · Per-tenant capability toggles persisted in PostgreSQL' };
+      case 'superadmin_sales_inquiries':
+        return { main: 'Sales Inquiries', sub: 'Genemax IT Solution · Enterprise sales pipeline & confidential notes' };
       default:
         return { main: 'GSIGN Hub', sub: branding.logoText };
     }
@@ -127,6 +130,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMenu }) => {
             <Search size={15} className="text-slate-400 mr-2 flex-shrink-0" />
             <input
               type="text"
+              aria-label="Search agreements by number, party, or status"
               placeholder="Search by number, party, status"
               value={searchQuery}
               onChange={e => {
@@ -134,6 +138,11 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMenu }) => {
                 setShowSearchResults(true);
               }}
               onFocus={() => setShowSearchResults(true)}
+              onKeyDown={e => {
+                if (e.key === 'Escape') {
+                  setShowSearchResults(false);
+                }
+              }}
               className="bg-transparent border-none outline-none w-full text-xs font-normal placeholder-slate-400 text-slate-900 dark:text-slate-100"
             />
             <div className="hidden sm:flex items-center text-[10px] text-slate-400 border border-slate-200 dark:border-slate-700 px-1 rounded font-mono">
@@ -209,25 +218,23 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMenu }) => {
           )}
         </button>
 
-        {/* New Agreement Action Button */}
-        <button
-          type="button"
-          onClick={() => setNewAgreementModalOpen(true)}
-          className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle cursor-pointer"
-        >
-          <Plus size={15} strokeWidth={2} />
-          <span className="hidden sm:inline">+ New agreement</span>
-        </button>
+        {/* New Agreement Action Button (Tenant workspaces only) */}
+        {!isRootAdmin && (
+          <button
+            type="button"
+            onClick={() => setNewAgreementModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle cursor-pointer"
+          >
+            <Plus size={15} strokeWidth={2} />
+            <span className="hidden sm:inline">+ New agreement</span>
+          </button>
+        )}
 
         {/* Sign Out Button */}
         <button
           type="button"
           onClick={async () => {
-            await api.logout().catch(() => {});
-            sessionStorage.removeItem('gsign_active_view');
-            setCurrentUser(null);
-            setCurrentRole('company_admin');
-            setActiveView('signin');
+            await logout();
             addToast('Signed Out', 'Your session has been ended.', 'info');
           }}
           title="Sign out"

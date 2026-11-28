@@ -20,8 +20,38 @@ export async function runMigrations(connectionString?: string) {
     console.log('Applying database schema and RLS policies...');
     await client.query('BEGIN');
     await client.query(sql);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version VARCHAR(128) PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
     await client.query('COMMIT');
     console.log('Schema migration applied successfully.');
+
+    // Apply ordered, versioned migrations in backend/src/database/migrations/*.sql
+    const migrationsDir = path.join(__dirname, 'migrations');
+    if (fs.existsSync(migrationsDir)) {
+      const files = fs
+        .readdirSync(migrationsDir)
+        .filter((f) => f.endsWith('.sql'))
+        .sort();
+      for (const file of files) {
+        const appliedRes = await client.query(
+          `SELECT 1 FROM schema_migrations WHERE version = $1 LIMIT 1`,
+          [file],
+        );
+        if (appliedRes.rows.length > 0) {
+          continue;
+        }
+        const migrationSql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+        console.log(`Applying versioned migration: ${file}...`);
+        await client.query('BEGIN');
+        await client.query(migrationSql);
+        await client.query(`INSERT INTO schema_migrations (version) VALUES ($1)`, [file]);
+        await client.query('COMMIT');
+      }
+    }
 
     // Verification check of created tables
     const tableCheckQuery = `

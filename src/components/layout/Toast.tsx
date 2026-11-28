@@ -8,7 +8,12 @@ export const ToastContainer: React.FC = () => {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
+    <div
+      role="region"
+      aria-label="Notifications"
+      aria-live="polite"
+      className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm pointer-events-none"
+    >
       {toasts.map(toast => {
         let icon = <CheckCircle2 className="text-emerald-500" size={15} />;
         let borderColor = 'border-slate-200 dark:border-slate-800';
@@ -24,6 +29,7 @@ export const ToastContainer: React.FC = () => {
         return (
           <div
             key={toast.id}
+            role={toast.type === 'error' ? 'alert' : 'status'}
             className={`pointer-events-auto flex items-start gap-2.5 p-3 rounded-lg bg-white dark:bg-slate-900 border ${borderColor} shadow-card transition-all`}
           >
             <div className="flex-shrink-0 mt-0.5">{icon}</div>
@@ -36,6 +42,8 @@ export const ToastContainer: React.FC = () => {
               </p>
             </div>
             <button
+              type="button"
+              aria-label="Dismiss notification"
               onClick={() => removeToast(toast.id)}
               className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5"
             >

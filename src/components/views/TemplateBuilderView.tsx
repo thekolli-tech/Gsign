@@ -14,11 +14,16 @@ import {
   Plus,
   Save,
   Copy,
-  Archive
+  Archive,
+  Trash2
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../services/api';
 import { AgreementTemplate, TemplateField } from '../../types';
+import {
+  normalizeFieldCoordinates,
+  renderTemplateContent,
+} from '../../utils/documentPreparation';
 
 const DEFAULT_FIELDS: TemplateField[] = [
   {
@@ -154,6 +159,7 @@ export const TemplateBuilderView: React.FC = () => {
     { type: 'Checkbox', label: 'Checkbox', icon: <CheckSquare size={13} /> },
     { type: 'File upload', label: 'File upload', icon: <Upload size={13} /> },
     { type: 'Signature', label: 'Signature', icon: <PenTool size={13} /> },
+    { type: 'Thumb Impression', label: 'Thumb Impression', icon: <FileSignature size={13} /> },
     { type: 'Initials', label: 'Initials', icon: <FileSignature size={13} /> },
     { type: 'Witness', label: 'Witness', icon: <Users size={13} /> },
     { type: 'Payment details', label: 'Payment details', icon: <CreditCard size={13} /> },
@@ -162,16 +168,32 @@ export const TemplateBuilderView: React.FC = () => {
   const selectedField = placedFields.find(f => f.id === selectedFieldId) || placedFields[0];
 
   const handleAddField = (type: TemplateField['type'], label: string) => {
-    const newField: TemplateField = {
-      id: `field-${Date.now()}`,
-      type,
-      label,
-      required: true,
-      signingMethod: type === 'Signature' || type === 'Witness' ? 'Basic electronic (drawn)' : undefined,
-    };
+    const newField = normalizeFieldCoordinates(
+      {
+        id: `field-${Date.now()}`,
+        type,
+        label,
+        required: true,
+        signingMethod: type === 'Signature' || type === 'Witness' ? 'Basic electronic (drawn)' : undefined,
+        assignedRole: type === 'Witness' ? 'Witness' : 'Recipient',
+      },
+      placedFields.length,
+    );
     setPlacedFields(prev => [...prev, newField]);
     setSelectedFieldId(newField.id);
-    addToast('Field Added', `Placed "${label}" on document canvas`, 'info');
+    addToast('Field Added', `Placed "${label}" at (${newField.x}%, ${newField.y}%)`, 'info');
+  };
+
+  const handleRemoveField = (id: string) => {
+    setPlacedFields(prev => prev.filter(f => f.id !== id));
+    if (selectedFieldId === id) {
+      const next = placedFields.find(f => f.id !== id);
+      setSelectedFieldId(next?.id || '');
+    }
+  };
+
+  const handleInsertPlaceholder = (token: string) => {
+    setContent(prev => (prev.endsWith(' ') || prev.endsWith('\n') || !prev ? `${prev}${token}` : `${prev} ${token}`));
   };
 
   const handleUpdateSelectedProperty = (key: keyof TemplateField, val: any) => {
@@ -181,6 +203,14 @@ export const TemplateBuilderView: React.FC = () => {
   };
 
   const handleSaveDraft = async (): Promise<AgreementTemplate | null> => {
+    if (!name.trim()) {
+      addToast('Validation Error', 'Template name is required.', 'warning');
+      return null;
+    }
+    if (!content.trim() || content.trim().length < 10) {
+      addToast('Validation Error', 'Template content must be at least 10 characters.', 'warning');
+      return null;
+    }
     setSaving(true);
     try {
       let saved: AgreementTemplate;
@@ -216,6 +246,10 @@ export const TemplateBuilderView: React.FC = () => {
   };
 
   const handlePublish = async () => {
+    if (!name.trim() || !content.trim() || content.trim().length < 10) {
+      addToast('Validation Error', 'Template name and content (min 10 chars) are required before publishing.', 'warning');
+      return;
+    }
     setSaving(true);
     try {
       let targetId = activeTemplateId;
@@ -533,18 +567,37 @@ export const TemplateBuilderView: React.FC = () => {
                   </div>
                   {isPreviewMode || !isSuperAdmin ? (
                     <div className="text-[13px] text-slate-700 dark:text-slate-300 leading-7 whitespace-pre-wrap font-serif">
-                      {content
-                        .replace(/\{\{recipient_name\}\}/g, isPreviewMode ? 'Meera Iyer' : '{{recipient_name}}')
-                        .replace(/\{\{fee_amount\}\}/g, isPreviewMode ? '₹45,000' : '{{fee_amount}}')
-                        .replace(/\{\{period\}\}/g, isPreviewMode ? '12 months' : '{{period}}')}
+                      {isPreviewMode
+                        ? renderTemplateContent(content, {
+                            recipientName: 'Meera Iyer',
+                            feeAmount: 45000,
+                            period: '12 months',
+                          })
+                        : content}
                     </div>
                   ) : (
-                    <textarea
-                      rows={8}
-                      value={content}
-                      onChange={e => setContent(e.target.value)}
-                      className="w-full text-[13px] text-slate-700 dark:text-slate-300 bg-slate-50/50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-md p-3.5 leading-7 outline-none focus:border-brand-600"
-                    />
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] text-slate-400 uppercase tracking-wider mr-1">Insert variable:</span>
+                        {['{{recipient_name}}', '{{fee_amount}}', '{{period}}'].map(tok => (
+                          <button
+                            key={tok}
+                            type="button"
+                            onClick={() => handleInsertPlaceholder(tok)}
+                            className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-brand-50 hover:text-brand-700 dark:hover:bg-brand-950/40 border border-slate-200 dark:border-slate-700"
+                          >
+                            {tok}
+                          </button>
+                        ))}
+                      </div>
+                      <textarea
+                        rows={8}
+                        aria-label="Template content"
+                        value={content}
+                        onChange={e => setContent(e.target.value)}
+                        className="w-full text-[13px] text-slate-700 dark:text-slate-300 bg-slate-50/50 dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800 rounded-md p-3.5 leading-7 outline-none focus:border-brand-600"
+                      />
+                    </div>
                   )}
                 </div>
 
@@ -658,22 +711,76 @@ export const TemplateBuilderView: React.FC = () => {
                   >
                     <option value="Basic electronic (drawn)">Basic electronic (drawn)</option>
                     <option value="OTP verified">OTP verified</option>
-                    <option value="Aadhaar eSign">Aadhaar eSign</option>
-                    <option value="DSC">DSC</option>
+                    <option value="Aadhaar eSign" disabled>Aadhaar eSign (Unavailable — Not Integrated)</option>
+                    <option value="DSC" disabled>DSC (Unavailable — Not Integrated)</option>
                   </select>
                 </div>
 
-                <div className="flex items-center gap-2 pt-0.5">
-                  <input
-                    type="checkbox"
-                    id="req-checkbox"
-                    checked={selectedField.required}
-                    onChange={e => handleUpdateSelectedProperty('required', e.target.checked)}
-                    className="w-3.5 h-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
-                  />
-                  <label htmlFor="req-checkbox" className="text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
-                    Required
+                <div className="flex items-center justify-between gap-2 pt-0.5">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="req-checkbox"
+                      checked={selectedField.required}
+                      onChange={e => handleUpdateSelectedProperty('required', e.target.checked)}
+                      className="w-3.5 h-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
+                    />
+                    <label htmlFor="req-checkbox" className="text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
+                      Required
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveField(selectedField.id)}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-rose-600 dark:text-rose-400 hover:underline"
+                  >
+                    <Trash2 size={11} />
+                    Remove
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <div>
+                    <label className="text-[11px] font-medium text-slate-600 dark:text-slate-400 block mb-1">
+                      X (%)
+                    </label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={90}
+                      value={selectedField.x ?? 8}
+                      onChange={e => handleUpdateSelectedProperty('x', Number(e.target.value))}
+                      className="w-full px-2 py-1 text-xs font-mono bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-slate-600 dark:text-slate-400 block mb-1">
+                      Y (%)
+                    </label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={90}
+                      value={selectedField.y ?? 72}
+                      onChange={e => handleUpdateSelectedProperty('y', Number(e.target.value))}
+                      className="w-full px-2 py-1 text-xs font-mono bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                    Assigned Role
                   </label>
+                  <select
+                    value={selectedField.assignedRole || 'Recipient'}
+                    onChange={e => handleUpdateSelectedProperty('assignedRole', e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg outline-none focus:border-brand-600 text-slate-800 dark:text-slate-100"
+                  >
+                    <option value="Recipient">Recipient</option>
+                    <option value="Witness">Witness</option>
+                    <option value="Sender">Sender</option>
+                  </select>
                 </div>
 
                 <div className="pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 dark:text-slate-500 leading-normal">

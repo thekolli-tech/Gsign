@@ -1,8 +1,14 @@
 import { BadRequestException } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
+import { Client } from 'pg';
 import { DatabaseModule } from '../database/database.module';
 import { DatabaseService } from '../database/database.service';
+import {
+  cleanupSyntheticFixtures,
+  createSyntheticTenantWithAdmin,
+  verifySafeIntegrationTarget,
+} from '../database/test-db-guard';
 import { RedisModule } from '../redis/redis.module';
 import { RedisService } from '../redis/redis.service';
 import { AuthService } from './auth.service';
@@ -13,6 +19,7 @@ import { SessionService } from './session.service';
 describe('AuthService Email Workflows (Registration, Employee Invite, Password Reset OTP)', () => {
   let db: DatabaseService;
   let redis: RedisService;
+  let adminClient: Client | null = null;
   let authService: AuthService;
   let tenantAId: string;
   let adminUser: any;
@@ -24,6 +31,8 @@ describe('AuthService Email Workflows (Registration, Employee Invite, Password R
   const originalEmailFrom = process.env.EMAIL_FROM;
 
   beforeAll(async () => {
+    const { adminDbUrl } = await verifySafeIntegrationTarget();
+
     const module: TestingModule = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -41,12 +50,13 @@ describe('AuthService Email Workflows (Registration, Employee Invite, Password R
     authService = module.get(AuthService);
     await db.onModuleInit();
 
-    const tRes = await db.query(`SELECT id FROM tenants WHERE slug = 'gsign' LIMIT 1`);
-    tenantAId = tRes.rows[0].id;
-    const uRes = await db.query(
-      `SELECT id, email, full_name FROM users WHERE email = 'priya@gsign.in' LIMIT 1`,
-    );
-    adminUser = { ...uRes.rows[0], tenantId: tenantAId };
+    adminClient = new Client({ connectionString: adminDbUrl });
+    await adminClient.connect();
+
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const fxA = await createSyntheticTenantWithAdmin(adminClient, runId, 'email-a');
+    tenantAId = fxA.tenantId;
+    adminUser = fxA.user;
   });
 
   afterEach(() => {
@@ -56,19 +66,18 @@ describe('AuthService Email Workflows (Registration, Employee Invite, Password R
   });
 
   afterAll(async () => {
-    for (const regId of createdRegIds) {
-      await db.executeAsSuperAdmin(async (client) => {
-        await client.query(`DELETE FROM company_registrations WHERE id = $1::uuid`, [regId]);
+    try {
+      await cleanupSyntheticFixtures(adminClient, {
+        registrationIds: createdRegIds,
+        inviteEmails: createdInviteEmails,
+        tenantIds: [tenantAId],
+        userIds: [adminUser?.id],
       });
+    } finally {
+      if (adminClient) await adminClient.end().catch(() => {});
+      if (db) await db.onModuleDestroy().catch(() => {});
+      if (redis) await redis.onModuleDestroy().catch(() => {});
     }
-    for (const email of createdInviteEmails) {
-      await db.executeAsSuperAdmin(async (client) => {
-        await client.query(`DELETE FROM invitations WHERE email = $1`, [email]);
-        await client.query(`DELETE FROM users WHERE email = $1`, [email]);
-      });
-    }
-    await db.onModuleDestroy();
-    await redis.onModuleDestroy();
   });
 
   it('Dispatches company registration verification email, employee invitation email, and password reset OTP using EMAIL_FROM', async () => {

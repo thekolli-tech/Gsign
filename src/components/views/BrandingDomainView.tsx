@@ -19,7 +19,7 @@ export const BrandingDomainView: React.FC = () => {
   const [emailDisplayName, setEmailDisplayName] = useState(branding.emailDisplayName);
   const [customDomain, setCustomDomain] = useState(branding.customDomain);
   const [dnsStatus, setDnsStatus] = useState<'pending' | 'checking' | 'verified'>(branding.dnsVerified ? 'verified' : 'pending');
-  const [saving, setSaving] = useState(false);
+  const [, setSaving] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 

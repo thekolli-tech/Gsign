@@ -6,6 +6,12 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { DatabaseModule } from '../database/database.module';
 import { DatabaseService } from '../database/database.service';
+import {
+  cleanupSyntheticFixtures,
+  createSyntheticTenantWithAdmin,
+  verifySafeIntegrationTarget,
+} from '../database/test-db-guard';
+import { Client } from 'pg';
 import { RedisModule } from '../redis/redis.module';
 import { RedisService } from '../redis/redis.service';
 import { AgreementsService } from '../agreements/agreements.service';
@@ -17,6 +23,7 @@ import { StorageService } from './storage.service';
 describe('DocumentsService, Storage, PDF Generation, Integrity & Signing Integration', () => {
   let db: DatabaseService;
   let redis: RedisService;
+  let adminClient: Client | null = null;
   let agreementsService: AgreementsService;
   let signingService: SigningService;
   let documentsService: DocumentsService;
@@ -29,6 +36,8 @@ describe('DocumentsService, Storage, PDF Generation, Integrity & Signing Integra
   const createdStandaloneDocIds: string[] = [];
 
   beforeAll(async () => {
+    const { adminDbUrl } = await verifySafeIntegrationTarget();
+
     const module: TestingModule = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -55,35 +64,31 @@ describe('DocumentsService, Storage, PDF Generation, Integrity & Signing Integra
     storageService = module.get<StorageService>(StorageService);
     await db.onModuleInit();
 
-    const tenantsRes = await db.query(
-      `SELECT id, slug FROM tenants WHERE slug IN ('gsign', 'acme') ORDER BY slug ASC`,
-    );
-    tenantAId = tenantsRes.rows.find((t) => t.slug === 'gsign').id;
-    tenantBId = tenantsRes.rows.find((t) => t.slug === 'acme').id;
+    adminClient = new Client({ connectionString: adminDbUrl });
+    await adminClient.connect();
 
-    const uARes = await db.query(
-      `SELECT id, email, full_name FROM users WHERE email = 'priya@gsign.in' LIMIT 1`,
-    );
-    const uBRes = await db.query(
-      `SELECT id, email, full_name FROM users WHERE email = 'john@acme.com' LIMIT 1`,
-    );
-    userA = { ...uARes.rows[0], fullName: uARes.rows[0].full_name, role: 'Company Admin' };
-    userB = { ...uBRes.rows[0], fullName: uBRes.rows[0].full_name, role: 'Company Admin' };
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const fxA = await createSyntheticTenantWithAdmin(adminClient, runId, 'doc-a');
+    const fxB = await createSyntheticTenantWithAdmin(adminClient, runId, 'doc-b');
+    tenantAId = fxA.tenantId;
+    tenantBId = fxB.tenantId;
+    userA = fxA.user;
+    userB = fxB.user;
   });
 
   afterAll(async () => {
-    for (const uuid of createdAgreementUuids) {
-      await db.executeAsSuperAdmin(async (client) => {
-        await client.query(`DELETE FROM agreements WHERE id = $1::uuid`, [uuid]);
+    try {
+      await cleanupSyntheticFixtures(adminClient, {
+        agreementIds: createdAgreementUuids,
+        documentIds: createdStandaloneDocIds,
+        tenantIds: [tenantAId, tenantBId],
+        userIds: [userA?.id, userB?.id],
       });
+    } finally {
+      if (adminClient) await adminClient.end().catch(() => {});
+      if (db) await db.onModuleDestroy().catch(() => {});
+      if (redis) await redis.onModuleDestroy().catch(() => {});
     }
-    for (const docId of createdStandaloneDocIds) {
-      await db.executeAsSuperAdmin(async (client) => {
-        await client.query(`DELETE FROM documents WHERE id = $1::uuid`, [docId]);
-      });
-    }
-    await db.onModuleDestroy();
-    await redis.onModuleDestroy();
   });
 
   it('Uploads original document, preserves versions, generates server PDF, verifies SHA-256, and enforces RLS isolation', async () => {

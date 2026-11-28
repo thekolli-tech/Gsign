@@ -163,6 +163,41 @@ export const api = {
     return res.json();
   },
 
+  async getManageableSubscriptionPlans() {
+    const res = await fetch(`${API_BASE}/subscriptions/plans/manage`, { credentials: 'include' });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || 'Failed to load subscription plans.');
+    }
+    return Array.isArray(data) ? data : [];
+  },
+
+  async updateSubscriptionPlan(
+    id: string,
+    payload: {
+      name?: string;
+      description?: string;
+      monthly_price?: number;
+      annual_price?: number;
+      max_agreements_per_month?: number;
+      max_users?: number;
+      features?: string[];
+      is_active?: boolean;
+    },
+  ) {
+    const res = await fetch(`${API_BASE}/subscriptions/plans/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || 'Failed to update subscription plan.');
+    }
+    return data;
+  },
+
   async simulateCheckout(payload: {
     tenant_id: string;
     plan_id: string;
@@ -250,11 +285,144 @@ export const api = {
     return parseJsonSafe(res);
   },
 
+  async getSubscriptionUsage() {
+    const res = await fetch(`${API_BASE}/subscriptions/usage`, { credentials: 'include' });
+    if (!res.ok) {
+      const err = await parseJsonSafe(res);
+      throw new Error(err?.message || `Failed to load subscription usage (${res.status})`);
+    }
+    return parseJsonSafe(res);
+  },
+
   async getInvoices() {
     const res = await fetch(`${API_BASE}/payments/invoices`, { credentials: 'include' });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      const err = await parseJsonSafe(res);
+      throw new Error(err?.message || `Failed to load invoices (${res.status})`);
+    }
     const data = await parseJsonSafe(res);
     return Array.isArray(data) ? data : [];
+  },
+
+  async getPaymentHistory(page = 1, limit = 20) {
+    const res = await fetch(`${API_BASE}/payments/history?page=${page}&limit=${limit}`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || `Failed to load payment history (${res.status})`);
+    }
+    return data;
+  },
+
+  async getPaymentReceipts() {
+    const res = await fetch(`${API_BASE}/payments/receipts`, { credentials: 'include' });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || `Failed to load payment receipts (${res.status})`);
+    }
+    return Array.isArray(data) ? data : [];
+  },
+
+  async createPaymentReceipt(payload: {
+    payer_name: string;
+    amount: number;
+    purpose: string;
+    agreement_id?: string;
+    agreement_number?: string;
+    payment_mode?: string;
+    tx_reference?: string;
+    issue_immediately?: boolean;
+  }) {
+    const res = await fetch(`${API_BASE}/payments/receipts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || `Failed to create payment receipt (${res.status})`);
+    }
+    return data;
+  },
+
+  async acknowledgePaymentReceipt(
+    receiptId: string,
+    payload: { payment_mode: string; tx_reference: string },
+  ) {
+    const res = await fetch(
+      `${API_BASE}/payments/receipts/${encodeURIComponent(receiptId)}/acknowledge`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      },
+    );
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || `Failed to acknowledge payment (${res.status})`);
+    }
+    return data;
+  },
+
+  async initiateCheckout(payload: {
+    registration_id: string;
+    plan_id: string;
+    billing_cycle: 'monthly' | 'annual';
+    admin_email: string;
+    checkout_access_token: string;
+    idempotency_key?: string;
+  }) {
+    const res = await fetch(`${API_BASE}/payments/checkout/initiate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || `Failed to initiate checkout (${res.status})`);
+    }
+    return data;
+  },
+
+  async getCheckoutStatus(payload: {
+    checkout_reference: string;
+    admin_email: string;
+    checkout_access_token: string;
+  }) {
+    const res = await fetch(`${API_BASE}/payments/checkout/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || `Failed to check checkout status (${res.status})`);
+    }
+    return data;
+  },
+
+  async transitionCheckoutState(
+    checkoutReference: string,
+    payload: {
+      admin_email: string;
+      checkout_access_token: string;
+      status: 'PAYMENT_PROCESSING' | 'PAYMENT_FAILED' | 'PAYMENT_CANCELLED';
+      reason?: string;
+    },
+  ) {
+    const res = await fetch(`${API_BASE}/payments/checkout/${encodeURIComponent(checkoutReference)}/transition`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || `Failed to update checkout (${res.status})`);
+    }
+    return data;
   },
 
   // 6. Agreements Engine
@@ -319,6 +487,18 @@ export const api = {
     const data = await parseJsonSafe(res);
     if (!res.ok) {
       throw new Error(data.message || 'Failed to delete draft agreement.');
+    }
+    return data;
+  },
+
+  async remindAgreement(id: string) {
+    const res = await fetch(`${API_BASE}/agreements/${encodeURIComponent(id)}/remind`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      throw new Error(data?.message || `Failed to send agreement reminder (${res.status}).`);
     }
     return data;
   },
@@ -472,9 +652,58 @@ export const api = {
     return data;
   },
 
+  async getBiometricCapabilities(token: string) {
+    const res = await fetch(`${API_BASE}/signing/portal/${encodeURIComponent(token)}/biometric/capabilities`);
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Could not load biometric capabilities.');
+    return data;
+  },
+
+  async requestBiometricChallenge(token: string) {
+    const res = await fetch(`${API_BASE}/signing/portal/${encodeURIComponent(token)}/biometric/challenge`, {
+      method: 'POST',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Could not initiate biometric challenge.');
+    return data;
+  },
+
+  async verifyBiometricAssertion(
+    token: string,
+    payload: {
+      challenge_id: string;
+      credential_id: string;
+      client_data_json: string;
+      authenticator_data: string;
+      signature: string;
+    },
+  ) {
+    const res = await fetch(`${API_BASE}/signing/portal/${encodeURIComponent(token)}/biometric/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Biometric verification failed.');
+    return data;
+  },
+
   async submitSigningSignature(
     token: string,
-    payload: { signature_data_url: string; consent_accepted: boolean; consent_text: string }
+    payload: {
+      signature_data_url: string;
+      consent_accepted: boolean;
+      consent_text: string;
+      signing_method?: 'basic_drawn' | 'otp_verified' | 'digital_thumb_impression' | 'device_biometric';
+      thumb_impression?: {
+        data_url: string;
+        thumb_type: 'left' | 'right';
+        capture_mode: 'touch_canvas' | 'image_upload';
+        mime_type: 'image/png' | 'image/jpeg';
+      };
+      biometric_verification_token?: string;
+      field_responses?: any[];
+    }
   ) {
     const res = await fetch(`${API_BASE}/signing/portal/${encodeURIComponent(token)}/sign`, {
       method: 'POST',
@@ -709,6 +938,81 @@ export const api = {
     }>;
   },
 
+  async getPlatformAnalytics(params?: { from?: string; to?: string; days?: number }) {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    if (params?.days) qs.set('days', String(params.days));
+    const query = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await fetch(`${API_BASE}/tenants/platform/analytics${query}`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data?.message || `Failed to load platform analytics (${res.status}).`);
+    return data;
+  },
+
+  async submitContactSales(payload: {
+    contact_name: string;
+    company_name: string;
+    business_email: string;
+    phone_number?: string;
+    company_size: string;
+    requested_plan?: string;
+    monthly_agreements?: string;
+    message?: string;
+  }) {
+    const res = await fetch(`${API_BASE}/tenants/contact-sales`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data?.message || `Failed to submit inquiry (${res.status}).`);
+    return data;
+  },
+
+  async getPlatformSalesInquiries(params?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    from?: string;
+    to?: string;
+  }) {
+    const qs = new URLSearchParams();
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.status && params.status !== 'all') qs.set('status', params.status);
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const query = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await fetch(`${API_BASE}/tenants/platform/sales-inquiries${query}`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data?.message || `Failed to load sales inquiries (${res.status}).`);
+    return data;
+  },
+
+  async updatePlatformSalesInquiry(
+    id: string,
+    payload: {
+      status?: string;
+      assigned_to_email?: string;
+      internal_notes?: string;
+    },
+  ) {
+    const res = await fetch(`${API_BASE}/tenants/platform/sales-inquiries/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data?.message || `Failed to update sales inquiry (${res.status}).`);
+    return data;
+  },
+
   async getSupportAccessSessions() {
     const res = await fetch(`${API_BASE}/tenants/platform/support-access`, {
       credentials: 'include',
@@ -758,6 +1062,90 @@ export const api = {
     });
     const data = await parseJsonSafe(res);
     if (!res.ok) throw new Error(data.message || 'Failed to update feature flags.');
+    return data;
+  },
+
+  async getRoles() {
+    const res = await fetch(`${API_BASE}/roles`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to load roles.');
+    return Array.isArray(data) ? data : [];
+  },
+
+  async inviteTeamMember(payload: { email: string; role_name: string; department: string }) {
+    const res = await fetch(`${API_BASE}/auth/invite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to send employee invitation.');
+    return data as {
+      success: boolean;
+      message: string;
+      email_delivery?: { sent: boolean; error?: string };
+    };
+  },
+
+  async getTeamInvitations() {
+    const res = await fetch(`${API_BASE}/auth/invitations`, {
+      credentials: 'include',
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) return [];
+    return Array.isArray(data) ? data : [];
+  },
+
+  async getInviteInfo(token: string) {
+    const res = await fetch(`${API_BASE}/auth/invite-info?token=${encodeURIComponent(token)}`);
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Invalid or expired invitation.');
+    return data as {
+      valid: boolean;
+      email: string;
+      workspace_name: string;
+      role_name: string;
+      department: string;
+      expires_at: string;
+    };
+  },
+
+  async acceptInvite(payload: { token: string; full_name: string; password: string }) {
+    const res = await fetch(`${API_BASE}/auth/accept-invite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to accept invitation.');
+    return data;
+  },
+
+  async updateUserStatus(userId: string, status: 'Active' | 'Deactivated') {
+    const res = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ status }),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to update member status.');
+    return data;
+  },
+
+  async updateUserRole(userId: string, payload: { role_name: string; department?: string }) {
+    const res = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}/role`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(data.message || 'Failed to update member role.');
     return data;
   },
 };

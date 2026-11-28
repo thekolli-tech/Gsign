@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { api } from '../../services/api';
 import gsignLogo from '../../assets/gsign_logo.png';
 
 export const ContactSalesView: React.FC = () => {
@@ -7,16 +8,41 @@ export const ContactSalesView: React.FC = () => {
 
   const [fullName, setFullName] = useState('');
   const [workEmail, setWorkEmail] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [teamSize, setTeamSize] = useState('11-50');
+  const [requestedPlan, setRequestedPlan] = useState('Enterprise');
   const [monthlyAgreements, setMonthlyAgreements] = useState('250-1000');
   const [message, setMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const [submitted, setSubmitted] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitted(true);
-    addToast('Inquiry Received', 'Our enterprise sales team will reach out within 4 business hours.', 'success');
+    if (submitting) return;
+    setErrorMsg('');
+    setSubmitting(true);
+    try {
+      await api.submitContactSales({
+        contact_name: fullName.trim(),
+        company_name: companyName.trim(),
+        business_email: workEmail.trim(),
+        phone_number: phoneNumber.trim() || undefined,
+        company_size: teamSize,
+        requested_plan: requestedPlan,
+        monthly_agreements: monthlyAgreements,
+        message: message.trim() || undefined,
+      });
+      setSubmitted(true);
+      addToast('Inquiry Received', 'Our enterprise sales team will reach out within 4 business hours.', 'success');
+    } catch (err: any) {
+      const msg = err.message || 'Could not submit inquiry. Please verify your details and try again.';
+      setErrorMsg(msg);
+      addToast('Submission Failed', msg, 'error');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -28,10 +54,16 @@ export const ContactSalesView: React.FC = () => {
             src={branding.logoUrl || gsignLogo}
             alt="GSIGN"
             className="h-8 w-auto max-w-[160px] object-contain cursor-pointer"
-            onClick={() => setActiveView('signin')}
+            onClick={() => setActiveView('landing')}
           />
         </div>
         <div className="flex items-center gap-4 text-xs font-medium">
+          <button
+            onClick={() => setActiveView('landing')}
+            className="text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 transition-colors"
+          >
+            Home
+          </button>
           <button
             onClick={() => setActiveView('signin')}
             className="text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 transition-colors"
@@ -97,18 +129,47 @@ export const ContactSalesView: React.FC = () => {
                   </div>
                 </div>
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                      Company Name *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Global Logistics Private Limited"
+                      value={companyName}
+                      onChange={e => setCompanyName(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-white outline-none focus:border-brand-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                      Phone Number
+                    </label>
+                    <input
+                      type="tel"
+                      placeholder="e.g. +91 98765 43210"
+                      value={phoneNumber}
+                      onChange={e => setPhoneNumber(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-white outline-none focus:border-brand-600"
+                    />
+                  </div>
+                </div>
+
                 <div>
                   <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
-                    Company Name *
+                    Requested Plan / Service
                   </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Global Logistics Private Limited"
-                    value={companyName}
-                    onChange={e => setCompanyName(e.target.value)}
+                  <select
+                    value={requestedPlan}
+                    onChange={e => setRequestedPlan(e.target.value)}
                     className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-white outline-none focus:border-brand-600"
-                  />
+                  >
+                    <option value="Enterprise">Enterprise Plan</option>
+                    <option value="Custom Dedicated">Dedicated Tenant & Custom SLA</option>
+                    <option value="High-Volume eSign API">High-Volume eSign & API Access</option>
+                  </select>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -157,11 +218,18 @@ export const ContactSalesView: React.FC = () => {
                   />
                 </div>
 
+                {errorMsg && (
+                  <div className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-rose-700 dark:text-rose-300">
+                    {errorMsg}
+                  </div>
+                )}
+
                 <button
                   type="submit"
-                  className="w-full py-2.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
+                  disabled={submitting}
+                  className="w-full py-2.5 rounded-lg font-medium text-xs text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle disabled:opacity-50"
                 >
-                  Submit Enterprise Inquiry →
+                  {submitting ? 'Submitting Inquiry...' : 'Submit Enterprise Inquiry →'}
                 </button>
               </form>
             </>

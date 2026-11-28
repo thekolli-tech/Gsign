@@ -1,9 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigModule } from '@nestjs/config';
+import { Client } from 'pg';
 import { DatabaseModule } from '../database/database.module';
 import { RedisModule } from '../redis/redis.module';
 import { DatabaseService } from '../database/database.service';
 import { RedisService } from '../redis/redis.service';
+import {
+  cleanupSyntheticFixtures,
+  verifySafeIntegrationTarget,
+} from '../database/test-db-guard';
 import { AuthService } from './auth.service';
 import { SessionService } from './session.service';
 import { CryptoService } from './crypto.service';
@@ -25,11 +30,16 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
   let db: DatabaseService;
   let redis: RedisService;
   let subscriptionGuard: SubscriptionGuard;
+  let adminClient: Client | null = null;
 
   let ownerUserId: string;
+  let ownerEmail: string;
+  const ownerPassword = 'InitTestPass#2026!';
   let testPlanId: string;
 
   beforeAll(async () => {
+    const { adminDbUrl } = await verifySafeIntegrationTarget();
+
     const module: TestingModule = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -64,24 +74,31 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
     await db.onModuleInit();
     await redis.onModuleInit();
 
+    adminClient = new Client({ connectionString: adminDbUrl });
+    await adminClient.connect();
+
     // Verify plans exist
     const plans = await subscriptionsService.getPlans();
     expect(plans.length).toBeGreaterThan(0);
     testPlanId = plans[0].id;
 
-    // Get Platform Owner user and reset must_change_password for test consistency
-    const ownerRes = await db.query(
-      `SELECT id FROM users WHERE email = 'genemaxitsolution@gmail.com';`
+    // Create an isolated synthetic Platform Owner account for this test run (never mutate real owner)
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    ownerEmail = `po-test-${runId}@example.com`;
+    const ownerHash = await cryptoService.hashPassword(ownerPassword);
+    const ownerRes = await adminClient.query(
+      `INSERT INTO users (email, password_hash, full_name, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
+       VALUES ($1, $2, 'Synthetic PO Tester', true, true, true, true, NOW())
+       RETURNING id;`,
+      [ownerEmail, ownerHash],
     );
-    expect(ownerRes.rows.length).toBeGreaterThan(0);
     ownerUserId = ownerRes.rows[0].id;
-    await db.query(`UPDATE users SET must_change_password = true WHERE id = $1;`, [ownerUserId]);
   });
 
   // TEST 1: Platform Owner login without subscription
   it('Requirement 1: Platform Owner can log in immediately without company registration or subscription', async () => {
     const result = await authService.login(
-      { email: 'genemaxitsolution@gmail.com', password: 'gsign#2k26' },
+      { email: ownerEmail, password: ownerPassword },
       '127.0.0.1',
       'Test-Agent'
     );
@@ -99,7 +116,7 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
     const mockExecutionContext: any = {
       switchToHttp: () => ({
         getRequest: () => ({
-          user: { id: ownerUserId, email: 'genemaxitsolution@gmail.com', isPlatformOwner: true, isSuperAdmin: true, role: 'PLATFORM_OWNER' },
+          user: { id: ownerUserId, email: ownerEmail, isPlatformOwner: true, isSuperAdmin: true, role: 'PLATFORM_OWNER' },
           tenantId: null,
           session: { tenantId: null, role: 'PLATFORM_OWNER' },
         }),
@@ -299,7 +316,7 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
 
     // 2. Path B: Manual Platform Owner Activation with Audit Trail
     const manualResult = await subscriptionsService.activateManual(
-      { id: ownerUserId, email: 'genemaxitsolution@gmail.com', isPlatformOwner: true, role: 'PLATFORM_OWNER' },
+      { id: ownerUserId, email: ownerEmail, isPlatformOwner: true, role: 'PLATFORM_OWNER' },
       {
         tenant_id: setupResult.tenant_id,
         plan_id: testPlanId,
@@ -398,29 +415,29 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
   it('Requirement 15: Owner bootstrap is idempotent and does not overwrite an existing owner password', async () => {
     // 1. Fetch current owner password hash
     const currentOwner = await db.query(
-      `SELECT password_hash FROM users WHERE email = 'genemaxitsolution@gmail.com';`
+      `SELECT password_hash FROM users WHERE email = ownerEmail;`
     );
     const originalHash = currentOwner.rows[0].password_hash;
 
     // 2. Change Platform Owner password
     const newPassword = 'NewOwnerPassword#2026!';
     const changeResult = await authService.changePassword(ownerUserId, {
-      current_password: 'gsign#2k26',
+      current_password: ownerPassword,
       new_password: newPassword,
     });
     expect(changeResult.success).toBe(true);
 
     // 3. Verify new password works
     const newLogin = await authService.login(
-      { email: 'genemaxitsolution@gmail.com', password: newPassword },
+      { email: ownerEmail, password: newPassword },
       '127.0.0.1',
       'Test-Agent'
     );
     expect(newLogin.session).toBeDefined();
 
     // 4. Simulate rerunning the bootstrap process (seed.ts logic)
-    const ownerEmail = 'genemaxitsolution@gmail.com';
-    const ownerPassword = 'gsign#2k26';
+    const ownerEmail = ownerEmail;
+    const ownerPassword = ownerPassword;
 
     const checkOwner = await db.query('SELECT id, password_hash FROM users WHERE email = $1', [ownerEmail]);
     expect(checkOwner.rows.length).toBe(1);
@@ -435,7 +452,7 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
 
     // 5. Verify that the changed password is STILL active and has NOT been reverted to initial password
     const afterBootstrapLogin = await authService.login(
-      { email: 'genemaxitsolution@gmail.com', password: newPassword },
+      { email: ownerEmail, password: newPassword },
       '127.0.0.1',
       'Test-Agent'
     );
@@ -444,7 +461,7 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
     // Initial password must fail
     await expect(
       authService.login(
-        { email: 'genemaxitsolution@gmail.com', password: 'gsign#2k26' },
+        { email: ownerEmail, password: ownerPassword },
         '127.0.0.1',
         'Test-Agent'
       )
@@ -453,7 +470,7 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
     // Revert back to gsign#2k26 for consistency with handover documentation
     await authService.changePassword(ownerUserId, {
       current_password: newPassword,
-      new_password: 'gsign#2k26',
+      new_password: ownerPassword,
     });
   });
 
@@ -480,7 +497,7 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
 
     // 2. Platform Owner session survives Redis cache eviction via PostgreSQL RLS fallback
     const ownerLogin = await authService.login(
-      { email: 'genemaxitsolution@gmail.com', password: 'gsign#2k26' },
+      { email: ownerEmail, password: ownerPassword },
       '127.0.0.1',
       'Regression-Agent'
     );
@@ -502,8 +519,12 @@ describe('Final Access-Control, Platform Owner & Subscription Model Tests', () =
   });
 
   afterAll(async () => {
-    // Ensure clean teardown of db and redis connections
-    await db.onModuleDestroy();
-    await redis.onModuleDestroy();
+    try {
+      await cleanupSyntheticFixtures(adminClient, { userIds: [ownerUserId] });
+    } finally {
+      if (adminClient) await adminClient.end().catch(() => {});
+      if (db) await db.onModuleDestroy().catch(() => {});
+      if (redis) await redis.onModuleDestroy().catch(() => {});
+    }
   });
 });

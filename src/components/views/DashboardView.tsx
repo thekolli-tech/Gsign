@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { AgreementStatus } from '../../types';
+import { canSignAgreementStatus } from '../../utils/agreementUi';
 
 export const DashboardView: React.FC = () => {
   const { 
@@ -139,7 +140,22 @@ export const DashboardView: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-normal">
-              {agreements.slice(0, 5).map(ag => (
+              {agreements.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-10 px-6 text-center text-xs text-slate-500 dark:text-slate-400">
+                    No agreements created yet. Use <strong>+ New agreement</strong> or{' '}
+                    <button
+                      type="button"
+                      onClick={() => setActiveView('templates')}
+                      className="text-brand-600 dark:text-brand-400 hover:underline font-medium"
+                    >
+                      Templates
+                    </button>{' '}
+                    to create your first agreement.
+                  </td>
+                </tr>
+              ) : (
+              agreements.slice(0, 5).map(ag => (
                 <tr
                   key={ag.id}
                   onClick={() => handleRowClick(ag.id)}
@@ -162,8 +178,9 @@ export const DashboardView: React.FC = () => {
                   </td>
                   <td className="py-3.5 px-6 text-right">
                     <div className="flex items-center justify-end gap-1.5" onClick={e => e.stopPropagation()}>
-                      {ag.status !== 'Completed' && (
+                      {canSignAgreementStatus(ag.status) && (
                         <button
+                          type="button"
                           onClick={e => handleSignDirect(e, ag)}
                           title="Open Signing Portal"
                           className="px-2 py-1 rounded text-[11px] font-medium bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400 hover:bg-brand-100 dark:hover:bg-brand-900/40 border border-brand-200 dark:border-brand-800/60 flex items-center gap-1 transition-colors"
@@ -173,7 +190,9 @@ export const DashboardView: React.FC = () => {
                         </button>
                       )}
                       <button
+                        type="button"
                         onClick={() => handleRowClick(ag.id)}
+                        aria-label={`View ${ag.id}`}
                         className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
                         title="View Audit & Document"
                       >
@@ -182,7 +201,8 @@ export const DashboardView: React.FC = () => {
                     </div>
                   </td>
                 </tr>
-              ))}
+              ))
+              )}
             </tbody>
           </table>
         </div>

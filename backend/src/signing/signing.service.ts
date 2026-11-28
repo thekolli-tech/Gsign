@@ -14,11 +14,20 @@ import * as crypto from 'crypto';
 import { DatabaseService } from '../database/database.service';
 import { DocumentsService } from '../documents/documents.service';
 import { RedisService } from '../redis/redis.service';
+import { EmailService } from '../notifications/email.service';
 import {
   CreateSigningRequestDto,
   RejectSigningDto,
   SubmitSignatureDto,
+  VerifyBiometricAssertionDto,
 } from './dto/signing.dto';
+import {
+  ApprovedBiometricServiceAdapter,
+  DedicatedFingerprintScannerAdapter,
+  InMemoryTrustedCredentialStore,
+  TrustedWebAuthnCredentialStore,
+  WebAuthnBiometricVerifier,
+} from './biometric.provider';
 
 interface TokenContext {
   tenantId: string;
@@ -35,7 +44,45 @@ export class SigningService {
     private readonly db: DatabaseService,
     private readonly redis: RedisService,
     @Optional() private readonly documentsService?: DocumentsService,
+    @Optional() private readonly emailService?: EmailService,
+    @Optional() private readonly webAuthnVerifier?: WebAuthnBiometricVerifier,
+    @Optional() private readonly scannerAdapter?: DedicatedFingerprintScannerAdapter,
+    @Optional() private readonly approvedBiometricAdapter?: ApprovedBiometricServiceAdapter,
+    @Optional() private readonly credentialStore?: InMemoryTrustedCredentialStore,
   ) {}
+
+  private readonly fallbackCredentialStore = new InMemoryTrustedCredentialStore();
+
+  private getCredentialStore(): TrustedWebAuthnCredentialStore {
+    return this.credentialStore ?? this.fallbackCredentialStore;
+  }
+
+  private async atomicConsumeRedisKey(key: string): Promise<string | null> {
+    if (typeof (this.redis as any).getdel === 'function') {
+      return (this.redis as any).getdel(key);
+    }
+    const val = await this.redis.get(key);
+    if (val !== null) {
+      await this.redis.del(key);
+    }
+    return val;
+  }
+
+  private getWebAuthnVerifier(): WebAuthnBiometricVerifier {
+    return this.webAuthnVerifier ?? new WebAuthnBiometricVerifier();
+  }
+
+  private getScannerAdapter(): DedicatedFingerprintScannerAdapter {
+    return this.scannerAdapter ?? new DedicatedFingerprintScannerAdapter();
+  }
+
+  private getApprovedBiometricAdapter(): ApprovedBiometricServiceAdapter {
+    return this.approvedBiometricAdapter ?? new ApprovedBiometricServiceAdapter();
+  }
+
+  private getEmailService(): EmailService {
+    return this.emailService ?? new EmailService(this.db, this.redis);
+  }
 
   private hashValue(value: string): string {
     return crypto.createHash('sha256').update(value).digest('hex');
@@ -51,35 +98,6 @@ export class SigningService {
         'Too many requests. Please wait before trying again.',
         HttpStatus.TOO_MANY_REQUESTS,
       );
-    }
-  }
-
-  private async sendEmail(to: string, subject: string, html: string): Promise<void> {
-    const resendKey = process.env.RESEND_API_KEY;
-    const fromEmail = process.env.EMAIL_FROM || 'GSIGN Security <noreply@gsign.in>';
-    if (!resendKey) {
-      return;
-    }
-
-    try {
-      const response = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${resendKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: fromEmail,
-          to: [to],
-          subject,
-          html,
-        }),
-      });
-      if (!response.ok) {
-        this.logger.warn(`Resend email delivery failed with status ${response.status}`);
-      }
-    } catch (error) {
-      this.logger.warn(`Resend email delivery error: ${(error as Error).message}`);
     }
   }
 
@@ -304,14 +322,19 @@ export class SigningService {
     });
 
     for (const r of result.recipients) {
-      await this.sendEmail(
-        r.email,
-        `Signature Requested: ${result.agreement_title} (${result.agreement_number})`,
-        `<p>Hello ${r.name},</p>
-         <p>You have been invited to review and sign <strong>${result.agreement_title}</strong> (${result.agreement_number}).</p>
-         <p><a href="${r.signing_url}">Open Secure Signing Portal</a></p>
-         <p>This link expires at ${new Date(r.token_expires_at).toUTCString()}.</p>`,
-      );
+      await this.getEmailService().sendNotification({
+        template: 'agreement_sent',
+        to: r.email,
+        tenantId,
+        payload: {
+          recipientName: r.name,
+          agreementTitle: result.agreement_title,
+          agreementNumber: result.agreement_number,
+          signingUrl: r.signing_url,
+          expiresAtText: new Date(r.token_expires_at).toUTCString(),
+        },
+        safeMetadata: { agreement_number: result.agreement_number },
+      });
     }
 
     return result;
@@ -553,14 +576,17 @@ export class SigningService {
 
     await this.redis.setex(cooldownKey, 60, '1');
 
-    await this.sendEmail(
-      recipientInfo.email,
-      `Your GSIGN Verification Code — ${recipientInfo.agreementNumber}`,
-      `<p>Hello ${recipientInfo.name},</p>
-       <p>Use the following 6-digit verification code to unlock <strong>${recipientInfo.agreementTitle}</strong>:</p>
-       <h2 style="letter-spacing: 4px;">${otp}</h2>
-       <p>This code expires in 10 minutes. Do not share it with anyone.</p>`,
-    );
+    await this.getEmailService().sendNotification({
+      template: 'signing_otp',
+      to: recipientInfo.email,
+      payload: {
+        recipientName: recipientInfo.name,
+        agreementTitle: recipientInfo.agreementTitle,
+        agreementNumber: recipientInfo.agreementNumber,
+        otp,
+      },
+      safeMetadata: { agreement_number: recipientInfo.agreementNumber },
+    });
 
     return {
       message: 'Verification OTP sent to your registered email address.',
@@ -724,6 +750,222 @@ export class SigningService {
     };
   }
 
+  async getBiometricCapabilities(rawToken: string) {
+    const ctx = await this.resolveRecipientContextByToken(rawToken);
+    const hasTrustedCredential = await this.getCredentialStore().hasActiveCredentialsForSubject(
+      ctx.recipientId,
+    );
+    return {
+      device_webauthn: {
+        available: hasTrustedCredential,
+        label: 'Device Biometric / Passkey Verification',
+        reason: hasTrustedCredential
+          ? undefined
+          : 'No registered trusted passkey/device credential exists for this recipient. Use Drawn Signature, OTP, or Digital Thumb Impression.',
+        note: 'Uses browser WebAuthn user verification (platform passkey, Touch ID, Face ID, Windows Hello, or device PIN).',
+      },
+      dedicated_scanner: this.getScannerAdapter().getStatus(),
+      approved_service: this.getApprovedBiometricAdapter().getStatus(),
+      aadhaar_esign: {
+        available: false,
+        label: 'Aadhaar eSign',
+        reason: 'Unavailable until an approved ASP/UIDAI eSign provider is integrated.',
+      },
+      dsc: {
+        available: false,
+        label: 'DSC',
+        reason: 'Unavailable until an approved DSC token provider is integrated.',
+      },
+    };
+  }
+
+  async createBiometricChallenge(
+    rawToken: string,
+    origin: string,
+    rpId: string,
+    ip?: string,
+  ) {
+    const tokenHash = this.hashValue(rawToken || '');
+    await this.enforceRateLimit(`rate:signing:bio_chal:ip:${ip || 'unknown'}`, 20, 900);
+    const ctx = await this.resolveRecipientContextByToken(rawToken);
+    const hasTrustedCredential = await this.getCredentialStore().hasActiveCredentialsForSubject(
+      ctx.recipientId,
+    );
+    if (!hasTrustedCredential) {
+      throw new ForbiddenException(
+        'No registered trusted passkey/device credential found for this recipient.',
+      );
+    }
+    const verifier = this.getWebAuthnVerifier();
+    const { challengeId, challenge } = verifier.generateChallenge();
+
+    const redisKey = `signing:webauthn:challenge:${tokenHash}:${challengeId}`;
+    await this.redis.setex(
+      redisKey,
+      300,
+      JSON.stringify({
+        recipientId: ctx.recipientId,
+        agreementId: ctx.agreementId,
+        challenge,
+        origin,
+        rpId,
+      }),
+    );
+
+    await this.db.executeWithTenantContext(ctx.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO agreement_events (tenant_id, agreement_id, title, description, event_type, ip_address)
+         VALUES ($1::uuid, $2::uuid, 'Biometric Authentication Initiated', $3::text, 'otp', $4::varchar)`,
+        [
+          ctx.tenantId,
+          ctx.agreementId,
+          'Recipient initiated Device Biometric / Passkey verification challenge',
+          ip || null,
+        ],
+      );
+      await client.query(
+        `INSERT INTO audit_logs (actor_role, action, target_type, target_id, tenant_id, metadata, ip_address)
+         VALUES ('Recipient', 'BIOMETRIC_AUTH_INITIATED', 'agreement', $1::varchar, $2::uuid, $3::jsonb, $4::varchar)`,
+        [
+          ctx.agreementId,
+          ctx.tenantId,
+          JSON.stringify({ provider_category: 'device_webauthn', challenge_id: challengeId }),
+          ip || null,
+        ],
+      );
+    });
+
+    return {
+      challenge_id: challengeId,
+      challenge,
+      rp_id: rpId,
+      timeout: 60000,
+      user_verification: 'required',
+      provider_category: 'device_webauthn',
+    };
+  }
+
+  async verifyBiometricAssertion(
+    rawToken: string,
+    dto: VerifyBiometricAssertionDto,
+    origin: string,
+    rpId: string,
+    ip?: string,
+    userAgent?: string,
+  ) {
+    const tokenHash = this.hashValue(rawToken || '');
+    const ctx = await this.resolveRecipientContextByToken(rawToken);
+    const redisKey = `signing:webauthn:challenge:${tokenHash}:${dto.challenge_id}`;
+    const storedRaw = await this.atomicConsumeRedisKey(redisKey);
+
+    if (!storedRaw) {
+      throw new ForbiddenException('Biometric challenge expired, invalid, or already used.');
+    }
+
+    let stored: { recipientId: string; agreementId: string; challenge: string; origin: string; rpId: string };
+    try {
+      stored = JSON.parse(storedRaw);
+    } catch {
+      throw new ForbiddenException('Malformed stored biometric challenge.');
+    }
+
+    if (stored.recipientId !== ctx.recipientId || stored.agreementId !== ctx.agreementId) {
+      throw new ForbiddenException('Biometric challenge does not match this recipient session.');
+    }
+
+    const store = this.getCredentialStore();
+    const trustedCred = await store.findCredentialForSubject(ctx.recipientId, dto.credential_id);
+    if (!trustedCred) {
+      throw new ForbiddenException('Credential is not registered or trusted for this recipient.');
+    }
+    if (trustedCred.revokedAt) {
+      throw new ForbiddenException('This biometric credential has been revoked.');
+    }
+
+    const verifier = this.getWebAuthnVerifier();
+    try {
+      const verified = verifier.verifyAssertion({
+        challenge_id: dto.challenge_id,
+        credential_id: dto.credential_id,
+        client_data_json: dto.client_data_json,
+        authenticator_data: dto.authenticator_data,
+        signature: dto.signature,
+        trusted_public_key_spki_pem: trustedCred.publicKeySpkiPem,
+        expected_rp_id: stored.rpId || rpId,
+        expected_origin: stored.origin || origin,
+        expected_challenge: stored.challenge,
+        previous_sign_count: trustedCred.signCount,
+      });
+
+      await store.updateSignCount(trustedCred.credentialId, verified.signCount);
+
+      const issued = verifier.issueVerificationToken({
+        recipientId: ctx.recipientId,
+        agreementId: ctx.agreementId,
+        signingRequestId: ctx.signingRequestId,
+        providerCategory: 'device_webauthn',
+        referenceId: dto.challenge_id,
+      });
+
+      await this.redis.setex(`signing:biometric:jti:${issued.jti}`, issued.ttlSeconds, '1');
+
+      await this.db.executeWithTenantContext(ctx.tenantId, async (client) => {
+        await client.query(
+          `INSERT INTO agreement_events (tenant_id, agreement_id, title, description, event_type, ip_address, device_info)
+           VALUES ($1::uuid, $2::uuid, 'Device Biometric / Passkey Verified', $3::text, 'consent', $4::varchar, $5::text)`,
+          [
+            ctx.tenantId,
+            ctx.agreementId,
+            `Device Biometric / Passkey verification succeeded (ref: ${dto.challenge_id.slice(0, 12)})`,
+            ip || null,
+            userAgent || null,
+          ],
+        );
+        await client.query(
+          `INSERT INTO audit_logs (actor_role, action, target_type, target_id, tenant_id, metadata, ip_address, user_agent)
+           VALUES ('Recipient', 'BIOMETRIC_AUTH_VERIFIED', 'agreement', $1::varchar, $2::uuid, $3::jsonb, $4::varchar, $5::text)`,
+          [
+            ctx.agreementId,
+            ctx.tenantId,
+            JSON.stringify({
+              provider_category: 'device_webauthn',
+              reference_id: dto.challenge_id,
+              user_verified: verified.userVerified,
+            }),
+            ip || null,
+            userAgent || null,
+          ],
+        );
+      });
+
+      return {
+        verified: true,
+        provider_category: 'device_webauthn',
+        reference_id: dto.challenge_id,
+        biometric_verification_token: issued.token,
+      };
+    } catch (err: any) {
+      await this.db.executeWithTenantContext(ctx.tenantId, async (client) => {
+        await client.query(
+          `INSERT INTO audit_logs (actor_role, action, target_type, target_id, tenant_id, metadata, ip_address, user_agent)
+           VALUES ('Recipient', 'BIOMETRIC_AUTH_FAILED', 'agreement', $1::varchar, $2::uuid, $3::jsonb, $4::varchar, $5::text)`,
+          [
+            ctx.agreementId,
+            ctx.tenantId,
+            JSON.stringify({
+              provider_category: 'device_webauthn',
+              reference_id: dto.challenge_id,
+              reason: err?.message || 'Verification failed',
+            }),
+            ip || null,
+            userAgent || null,
+          ],
+        );
+      }).catch(() => {});
+      throw err;
+    }
+  }
+
   async submitSignature(
     rawToken: string,
     dto: SubmitSignatureDto,
@@ -792,6 +1034,61 @@ export class SigningService {
         throw new BadRequestException(`Cannot submit signature when status is ${portalStatus}.`);
       }
 
+      if (Array.isArray(dto.field_responses)) {
+        for (const fieldResp of dto.field_responses) {
+          const role = fieldResp.assigned_role || 'Recipient';
+          if (role !== 'Recipient') {
+            throw new ForbiddenException(
+              `Recipients can only complete fields assigned to them (field '${fieldResp.field_id}' is assigned to '${role}').`,
+            );
+          }
+          if (fieldResp.required) {
+            const typeLower = (fieldResp.type || '').toLowerCase();
+            if (typeLower === 'checkbox' && fieldResp.checked !== true) {
+              throw new BadRequestException(`Required checkbox field '${fieldResp.field_id}' must be checked.`);
+            }
+            if (
+              ['text', 'date', 'initials'].includes(typeLower) &&
+              !String(fieldResp.value || '').trim()
+            ) {
+              throw new BadRequestException(`Required ${fieldResp.type} field '${fieldResp.field_id}' cannot be empty.`);
+            }
+          }
+        }
+      }
+
+      let effectiveSignatureDataUrl = dto.signature_data_url;
+      const effectiveSigningMethod = dto.signing_method || 'basic_drawn';
+      let biometricRef: { providerCategory: string; referenceId: string } | null = null;
+
+      if (effectiveSigningMethod === 'digital_thumb_impression') {
+        if (!dto.thumb_impression?.data_url) {
+          throw new BadRequestException('Digital thumb impression image is required.');
+        }
+        const thumbMatch = dto.thumb_impression.data_url.match(/^data:image\/(png|jpeg);base64,(.+)$/i);
+        if (!thumbMatch || Buffer.from(thumbMatch[2], 'base64').length <= 32) {
+          throw new BadRequestException('Digital thumb impression must be a valid PNG or JPEG image.');
+        }
+        effectiveSignatureDataUrl = dto.thumb_impression.data_url;
+      }
+
+      if (effectiveSigningMethod === 'device_biometric') {
+        if (!dto.biometric_verification_token) {
+          throw new ForbiddenException('Device Biometric / Passkey verification is required before submitting.');
+        }
+        const verifiedTok = this.getWebAuthnVerifier().verifyVerificationToken(
+          dto.biometric_verification_token,
+          recipient.id,
+          agreement.id,
+          request.id,
+        );
+        const consumedJti = await this.atomicConsumeRedisKey(`signing:biometric:jti:${verifiedTok.jti}`);
+        if (!consumedJti) {
+          throw new ForbiddenException('Biometric verification token has already been used or expired.');
+        }
+        biometricRef = verifiedTok;
+      }
+
       const documentHash =
         agreement.document_hash ||
         this.hashValue(`${agreement.id}:${agreement.agreement_number}:${agreement.template_type}`);
@@ -815,12 +1112,27 @@ export class SigningService {
           agreement.id,
           request.id,
           recipient.id,
-          dto.signature_data_url,
+          effectiveSignatureDataUrl,
           documentHash,
           ip || null,
           userAgent || null,
         ],
       );
+
+      if (effectiveSigningMethod === 'digital_thumb_impression' && dto.thumb_impression) {
+        await client.query(
+          `INSERT INTO agreement_events (tenant_id, agreement_id, title, description, event_type, ip_address, device_info, document_hash)
+           VALUES ($1::uuid, $2::uuid, 'Digital Thumb Impression Captured', $3::text, 'signed', $4::varchar, $5::text, $6::varchar)`,
+          [
+            ctx.tenantId,
+            agreement.id,
+            `${recipient.name} provided ${dto.thumb_impression.thumb_type} thumb impression (${dto.thumb_impression.capture_mode})`,
+            ip || null,
+            userAgent || null,
+            documentHash,
+          ],
+        );
+      }
 
       await client.query(
         `UPDATE signing_recipients
@@ -835,7 +1147,7 @@ export class SigningService {
         [
           ctx.tenantId,
           agreement.id,
-          `${recipient.name} (${recipient.email}) signed the agreement`,
+          `${recipient.name} (${recipient.email}) signed via ${effectiveSigningMethod}`,
           ip || null,
           userAgent || null,
           documentHash,
@@ -849,7 +1161,15 @@ export class SigningService {
           recipient.email,
           agreement.id,
           ctx.tenantId,
-          JSON.stringify({ recipient_id: recipient.id, document_hash: documentHash }),
+          JSON.stringify({
+            recipient_id: recipient.id,
+            document_hash: documentHash,
+            signing_method: effectiveSigningMethod,
+            thumb_type: dto.thumb_impression?.thumb_type,
+            capture_mode: dto.thumb_impression?.capture_mode,
+            biometric_provider_category: biometricRef?.providerCategory,
+            biometric_reference_id: biometricRef?.referenceId,
+          }),
           ip || null,
           userAgent || null,
         ],
@@ -865,6 +1185,20 @@ export class SigningService {
       );
       const pendingCount = Number(pendingRes.rows[0]?.pending_count ?? 0);
       const allCompleted = pendingCount === 0;
+
+      const nextSignerRes = allCompleted
+        ? { rows: [] }
+        : await client.query(
+            `SELECT name, email, signing_order
+             FROM signing_recipients
+             WHERE signing_request_id = $1::uuid
+               AND is_required = TRUE
+               AND status <> 'SIGNED'
+             ORDER BY signing_order ASC, created_at ASC
+             LIMIT 1`,
+            [request.id],
+          );
+      const nextSigner = nextSignerRes.rows[0] || null;
 
       if (allCompleted) {
         if (this.documentsService) {
@@ -891,15 +1225,33 @@ export class SigningService {
             [request.id],
           );
 
-          await client.query(
+          const completedRes = await client.query(
             `UPDATE agreements
              SET status = 'Completed',
                  signature_data_url = COALESCE(signature_data_url, $2::text),
                  completed_at = NOW(),
                  updated_at = NOW()
-             WHERE id = $1::uuid`,
+             WHERE id = $1::uuid AND status <> 'Completed'
+             RETURNING id`,
             [agreement.id, dto.signature_data_url],
           );
+
+          if ((completedRes.rowCount ?? completedRes.rows.length) > 0) {
+            await client.query(
+              `INSERT INTO usage_records (tenant_id, period_start, period_end, agreements_completed)
+               VALUES (
+                 $1::uuid,
+                 date_trunc('month', NOW() AT TIME ZONE 'UTC')::date,
+                 (date_trunc('month', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 month - 1 day')::date,
+                 1
+               )
+               ON CONFLICT (tenant_id, period_start)
+               DO UPDATE SET
+                 agreements_completed = usage_records.agreements_completed + 1,
+                 updated_at = NOW()`,
+              [ctx.tenantId],
+            );
+          }
 
           await client.query(
             `INSERT INTO agreement_events (tenant_id, agreement_id, title, description, event_type, ip_address, document_hash)
@@ -936,9 +1288,39 @@ export class SigningService {
             ? 'Finalizing'
             : 'Completed'
           : 'Partially signed',
+        next_signer: nextSigner,
         document_hash: documentHash,
+        signer_name: recipient.name,
+        recipient_email: agreement.recipient_email,
+        recipient_name: agreement.recipient_name,
+        agreement_number: agreement.agreement_number,
+        agreement_title: `${agreement.template_type} (${agreement.department})`,
       };
     });
+
+    if (this.emailService && result.recipient_email) {
+      await this.emailService
+        .sendNotification({
+          template: result.agreement_status === 'Partially signed' ? 'agreement_signed' : 'agreement_completed',
+          to: result.recipient_email,
+          tenantId: ctx.tenantId,
+          payload:
+            result.agreement_status === 'Partially signed'
+              ? {
+                  recipientName: result.recipient_name || 'Recipient',
+                  signerName: result.signer_name || 'Signatory',
+                  agreementNumber: result.agreement_number,
+                  agreementTitle: result.agreement_title,
+                }
+              : {
+                  recipientName: result.recipient_name || 'Recipient',
+                  agreementNumber: result.agreement_number,
+                  agreementTitle: result.agreement_title,
+                },
+          safeMetadata: { agreement_number: result.agreement_number },
+        })
+        .catch(() => {});
+    }
 
     if (result.agreement_status === 'Finalizing' && this.documentsService) {
       const finalized = await this.documentsService.generateFinalSignedPackage(

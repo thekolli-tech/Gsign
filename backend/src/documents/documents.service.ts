@@ -82,8 +82,8 @@ export class DocumentsService {
       `INSERT INTO usage_records (tenant_id, period_start, period_end, storage_bytes_used)
        VALUES (
          $1::uuid,
-         date_trunc('month', CURRENT_DATE)::date,
-         (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month - 1 day')::date,
+         date_trunc('month', NOW() AT TIME ZONE 'UTC')::date,
+         (date_trunc('month', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 month - 1 day')::date,
          $2::bigint
        )
        ON CONFLICT (tenant_id, period_start)
@@ -738,14 +738,32 @@ export class DocumentsService {
           );
         }
 
-        await client.query(
+        const completedRes = await client.query(
           `UPDATE agreements
            SET status = 'Completed',
                completed_at = COALESCE(completed_at, NOW()),
                updated_at = NOW()
-           WHERE id = $1::uuid`,
+           WHERE id = $1::uuid AND status <> 'Completed'
+           RETURNING id`,
           [agreementId],
         );
+
+        if ((completedRes.rowCount ?? completedRes.rows.length) > 0) {
+          await client.query(
+            `INSERT INTO usage_records (tenant_id, period_start, period_end, agreements_completed)
+             VALUES (
+               $1::uuid,
+               date_trunc('month', NOW() AT TIME ZONE 'UTC')::date,
+               (date_trunc('month', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 month - 1 day')::date,
+               1
+             )
+             ON CONFLICT (tenant_id, period_start)
+             DO UPDATE SET
+               agreements_completed = usage_records.agreements_completed + 1,
+               updated_at = NOW()`,
+            [tenantId],
+          );
+        }
 
         await client.query(
           `INSERT INTO document_access_logs (tenant_id, document_id, document_version_id, actor_id, actor_email, action, ip_address, user_agent)
@@ -965,7 +983,7 @@ export class DocumentsService {
       version.storage_key,
     );
     const actualSha256 = this.sha256(buffer);
-    const verified = actualSha256 === version.sha256_hash;
+    const verified = Boolean(version.sha256_hash) && actualSha256 === version.sha256_hash;
 
     await this.db.executeWithTenantContext(tenantId, async (client) => {
       await client.query(

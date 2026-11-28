@@ -8,11 +8,17 @@ import {
   Lock,
   Upload,
   FileText,
-  ShieldCheck
+  ShieldCheck,
+  Bell
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../services/api';
 import { jsPDF } from 'jspdf';
+import {
+  buildCompletionCertificateSummary,
+  buildSanitizedAuditTimeline,
+  getAgreementLifecycleInfo,
+} from '../../utils/documentManagement';
 
 export const AgreementDetailView: React.FC = () => {
   const { 
@@ -31,29 +37,40 @@ export const AgreementDetailView: React.FC = () => {
   } = useApp();
 
   const [verifyingHash, setVerifyingHash] = useState(false);
-  const [hashVerified, setHashVerified] = useState(false);
+  const [verificationStatus, setVerificationStatus] = useState<
+    'not_verified' | 'verified' | 'failed' | 'unavailable'
+  >('not_verified');
+  const [verificationDetail, setVerificationDetail] = useState<string>('');
   const [creatingSigningLink, setCreatingSigningLink] = useState(false);
+  const [sendingReminder, setSendingReminder] = useState(false);
   const [serverDocs, setServerDocs] = useState<any[]>([]);
+  const [signingRequests, setSigningRequests] = useState<any[]>([]);
   const [docBusy, setDocBusy] = useState(false);
   const [docsError, setDocsError] = useState<string | null>(null);
 
   const agreement = agreements.find(a => a.id === selectedAgreementId) || agreements[0];
   const agreementUuid = (agreement as any)?.uuid || agreement?.id;
 
-  const loadServerDocs = async () => {
+  const loadServerDocs = React.useCallback(async () => {
     if (!agreementUuid) return;
     setDocsError(null);
+    setVerificationStatus('not_verified');
+    setVerificationDetail('');
     try {
-      const docs = await api.getDocuments(agreementUuid);
+      const [docs, requests] = await Promise.all([
+        api.getDocuments(agreementUuid),
+        api.getSigningRequestsForAgreement(agreementUuid).catch(() => []),
+      ]);
       setServerDocs(docs);
+      setSigningRequests(Array.isArray(requests) ? requests : []);
     } catch (err: any) {
       setDocsError(err.message || 'Could not load server documents.');
     }
-  };
+  }, [agreementUuid]);
 
   useEffect(() => {
-    loadServerDocs();
-  }, [agreementUuid]);
+    void loadServerDocs();
+  }, [loadServerDocs]);
 
   const handleUploadOriginal = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -85,19 +102,32 @@ export const AgreementDetailView: React.FC = () => {
     }
   };
 
-  const handleVerifyDocument = async (docId: string, versionId?: string) => {
+  const handleVerifyDocument = async (docId: string, versionId?: string): Promise<boolean> => {
     setDocBusy(true);
+    setVerifyingHash(true);
     try {
       const res = await api.verifyDocumentIntegrity(docId, versionId);
-      addToast(
-        res.verified ? 'Integrity Verified' : 'Integrity Mismatch',
-        `SHA-256 ${res.verified ? 'matches' : 'does not match'}: ${res.actual_sha256.slice(0, 16)}...`,
-        res.verified ? 'success' : 'error',
+      const isOk = Boolean(res?.verified && res?.expected_sha256 && res?.actual_sha256 === res?.expected_sha256);
+      setVerificationStatus(isOk ? 'verified' : 'failed');
+      setVerificationDetail(
+        isOk
+          ? `Server SHA-256 verified (${String(res.actual_sha256).slice(0, 16)}...)`
+          : 'Server SHA-256 mismatch detected.',
       );
+      addToast(
+        isOk ? 'Integrity Verified' : 'Integrity Mismatch',
+        `SHA-256 ${isOk ? 'matches' : 'does not match'}: ${String(res?.actual_sha256 || '').slice(0, 16)}...`,
+        isOk ? 'success' : 'error',
+      );
+      return isOk;
     } catch (err: any) {
+      setVerificationStatus('failed');
+      setVerificationDetail(err?.message || 'Document integrity verification failed.');
       addToast('Verification Failed', err.message || 'Could not verify document', 'error');
+      return false;
     } finally {
       setDocBusy(false);
+      setVerifyingHash(false);
     }
   };
 
@@ -268,13 +298,25 @@ export const AgreementDetailView: React.FC = () => {
     }
   };
 
-  const handleVerifyTamperProof = () => {
-    setVerifyingHash(true);
-    setTimeout(() => {
-      setVerifyingHash(false);
-      setHashVerified(true);
-      addToast('Hash Verification Passed', 'Document SHA-256 matches immutable root ledger', 'success');
-    }, 800);
+  const handleVerifyTamperProof = async () => {
+    const preferredDoc =
+      serverDocs.find((d) => d.doc_kind === 'signed_pdf') ||
+      serverDocs.find((d) => d.doc_kind === 'generated_pdf') ||
+      serverDocs[0];
+
+    if (!preferredDoc?.id) {
+      setVerificationStatus('unavailable');
+      setVerificationDetail('No vaulted server document is available to verify.');
+      addToast(
+        'Verification Unavailable',
+        'No server-stored document exists yet. Upload a document or generate a server PDF to verify integrity.',
+        'warning',
+      );
+      return;
+    }
+
+    const latestVersionId = preferredDoc.versions?.[0]?.id;
+    await handleVerifyDocument(preferredDoc.id, latestVersionId);
   };
 
   const issueSigningLink = async (): Promise<{ token: string; url: string } | null> => {
@@ -314,6 +356,30 @@ export const AgreementDetailView: React.FC = () => {
     if (!issued) return;
     await navigator.clipboard.writeText(issued.url);
     addToast('Link Copied', 'Secure recipient signing portal link copied to clipboard', 'info');
+  };
+
+  const handleSendReminder = async () => {
+    if (!agreement || sendingReminder) return;
+    setSendingReminder(true);
+    try {
+      const res = await api.remindAgreement(agreement.id);
+      const firstStatus = res?.delivery_results?.[0]?.status;
+      if (firstStatus === 'sent') {
+        addToast('Reminder Sent', `Signing reminder delivered to ${res.recipients_notified} recipient(s).`, 'success');
+      } else if (firstStatus === 'disabled') {
+        addToast('Reminder Recorded', 'Reminder queued in audit trail (email provider disabled in this environment).', 'info');
+      } else {
+        addToast('Reminder Queued (Delivery Failed)', 'Reminder audit logged, but email delivery failed.', 'warning');
+      }
+      const refreshed = await api.getAgreements();
+      if (Array.isArray(refreshed)) {
+        setAgreements(refreshed);
+      }
+    } catch (err: any) {
+      addToast('Reminder Failed', err.message || 'Could not send signing reminder.', 'error');
+    } finally {
+      setSendingReminder(false);
+    }
   };
 
   return (
@@ -357,6 +423,18 @@ export const AgreementDetailView: React.FC = () => {
             <Copy size={13} />
             <span>Copy Link</span>
           </button>
+
+          {['Awaiting OTP', 'Awaiting signature', 'Partially signed'].includes(agreement.status) && (
+            <button
+              type="button"
+              onClick={handleSendReminder}
+              disabled={sendingReminder}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors shadow-subtle"
+            >
+              <Bell size={13} />
+              <span>{sendingReminder ? 'Sending...' : 'Send Reminder'}</span>
+            </button>
+          )}
 
           {agreement.status === 'Draft' && (
             <>
@@ -445,8 +523,16 @@ export const AgreementDetailView: React.FC = () => {
                   </span>
                 </div>
                 <div className="flex items-center gap-1 text-[11px] text-slate-400 font-mono">
-                  <Lock size={11} className="text-emerald-500" />
-                  <span>VERIFIED ORIGINAL</span>
+                  <Lock size={11} className={verificationStatus === 'verified' ? 'text-emerald-500' : 'text-slate-400'} />
+                  <span>
+                    {verificationStatus === 'verified'
+                      ? 'SERVER INTEGRITY VERIFIED'
+                      : verificationStatus === 'failed'
+                        ? 'VERIFICATION FAILED'
+                        : verificationStatus === 'unavailable'
+                          ? 'NO VAULTED DOCUMENT'
+                          : 'RECORD HASH ON FILE'}
+                  </span>
                 </div>
               </div>
 
@@ -485,9 +571,23 @@ export const AgreementDetailView: React.FC = () => {
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center gap-1 text-[11px] font-mono text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800/40">
+                    <div
+                      className={`flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded border ${
+                        verificationStatus === 'verified'
+                          ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800/40'
+                          : verificationStatus === 'failed'
+                            ? 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800/40'
+                            : 'text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
                       <CheckCircle2 size={11} />
-                      Verified Hash
+                      {verificationStatus === 'verified'
+                        ? 'Server Verified'
+                        : verificationStatus === 'failed'
+                          ? 'Verification Failed'
+                          : verificationStatus === 'unavailable'
+                            ? 'No Vaulted PDF'
+                            : 'Not Yet Verified'}
                     </div>
                   </div>
                 ) : (
@@ -502,64 +602,158 @@ export const AgreementDetailView: React.FC = () => {
               </div>
 
               {/* Cryptographic Hash Verification Line */}
-              <div className="flex items-center justify-between text-xs text-slate-400 pt-1 font-mono">
-                <div className="flex items-center gap-1.5 text-[11px]">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                  <span>SHA-256: {agreement.documentHash}</span>
+              <div className="flex items-center justify-between text-xs text-slate-400 pt-1 font-mono gap-2">
+                <div className="flex items-center gap-1.5 text-[11px] truncate" title={verificationDetail || undefined}>
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      verificationStatus === 'verified'
+                        ? 'bg-emerald-500'
+                        : verificationStatus === 'failed'
+                          ? 'bg-rose-500'
+                          : verificationStatus === 'unavailable'
+                            ? 'bg-amber-500'
+                            : 'bg-slate-400'
+                    }`}
+                  />
+                  <span className="truncate">SHA-256: {agreement.documentHash}</span>
                 </div>
                 <button
                   onClick={handleVerifyTamperProof}
                   disabled={verifyingHash}
-                  className="text-brand-600 dark:text-brand-400 hover:underline text-[11px] font-sans font-medium"
+                  className="text-brand-600 dark:text-brand-400 hover:underline text-[11px] font-sans font-medium shrink-0"
                 >
-                  {verifyingHash ? 'Verifying...' : hashVerified ? '✓ Validated' : 'Verify Hash'}
+                  {verifyingHash
+                    ? 'Verifying...'
+                    : verificationStatus === 'verified'
+                      ? '✓ Server Verified'
+                      : verificationStatus === 'failed'
+                        ? 'Verification Failed — Retry'
+                        : verificationStatus === 'unavailable'
+                          ? 'Verification Unavailable'
+                          : 'Verify Integrity'}
                 </button>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Right: Audit Trail matching Screenshot Pages 6 & 20 */}
-        <div className="lg:col-span-5">
-          <div className="p-6 sm:p-7 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card space-y-5">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                Audit trail
-              </h3>
-              <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
-                Immutable
-              </span>
-            </div>
+        {/* Right: Agreement History, Audit Trail & Completion Certificate Summary */}
+        <div className="lg:col-span-5 space-y-6">
+          {(() => {
+            const lifecycle = getAgreementLifecycleInfo(agreement.status);
+            const timelineEvents = buildSanitizedAuditTimeline(agreement.auditTrail || []);
+            const allRecipients = signingRequests.flatMap((req: any) =>
+              Array.isArray(req.recipients) ? req.recipients : [],
+            );
+            const certSummary = buildCompletionCertificateSummary(agreement.status, allRecipients);
 
-            {/* Vertical Timeline matching the exact screenshot items */}
-            <div className="relative pl-5 space-y-5 before:absolute before:left-1.5 before:top-2 before:bottom-2 before:w-px before:bg-brand-600 dark:before:bg-brand-500">
-              {agreement.auditTrail.map((event, idx) => (
-                <div key={event.id || idx} className="relative">
-                  {/* Blue Dot */}
-                  <div className="absolute -left-[19px] top-1.5 w-2.5 h-2.5 rounded-full bg-brand-600 dark:bg-brand-500 border-2 border-white dark:border-slate-800" />
-
-                  <div>
-                    <h4 className="text-xs font-semibold text-slate-900 dark:text-white">
-                      {event.title}
-                    </h4>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                      {event.description}
-                    </p>
-                    {event.ip && (
-                      <span className="text-[10px] font-mono text-slate-400 block mt-0.5">
-                        IP: {event.ip} · {event.device}
+            return (
+              <>
+                <div className="p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                      Agreement Lifecycle & History
+                    </h3>
+                    <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300">
+                      {lifecycle.label}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {lifecycle.description}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-[11px]">
+                    <div>
+                      <span className="text-slate-400 block">Template</span>
+                      <span className="font-medium text-slate-800 dark:text-slate-200">{agreement.templateType}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block">Document Versions</span>
+                      <span className="font-medium text-slate-800 dark:text-slate-200">{serverDocs.length} vaulted</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block">Primary Recipient</span>
+                      <span className="font-medium text-slate-800 dark:text-slate-200 truncate block">
+                        {agreement.recipientName}
                       </span>
-                    )}
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block">Certificate Status</span>
+                      <span className="font-medium text-slate-800 dark:text-slate-200">{certSummary.status}</span>
+                    </div>
+                  </div>
+                  {allRecipients.length > 0 && (
+                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-1">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400">
+                        Signing Order & Recipients
+                      </span>
+                      {allRecipients.map((rec: any, rIdx: number) => (
+                        <div key={rec.id || rIdx} className="flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300">
+                          <span>#{rec.signing_order ?? rIdx + 1} · {rec.name}</span>
+                          <span className="font-mono uppercase text-[10px]">{rec.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-[10px] text-slate-400 leading-snug pt-1 border-t border-slate-100 dark:border-slate-800">
+                    {certSummary.disclaimer}
+                  </p>
+                </div>
+
+                <div className="p-6 sm:p-7 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card space-y-5">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                      Audit trail
+                    </h3>
+                    <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                      Recorded Events ({timelineEvents.length})
+                    </span>
+                  </div>
+
+                  {timelineEvents.length === 0 ? (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      No audit events recorded yet for this agreement.
+                    </p>
+                  ) : (
+                    <div className="relative pl-5 space-y-5 before:absolute before:left-1.5 before:top-2 before:bottom-2 before:w-px before:bg-brand-600 dark:before:bg-brand-500">
+                      {timelineEvents.map((event, idx) => (
+                        <div key={event.id || idx} className="relative">
+                          <div className="absolute -left-[19px] top-1.5 w-2.5 h-2.5 rounded-full bg-brand-600 dark:bg-brand-500 border-2 border-white dark:border-slate-800" />
+                          <div>
+                            <div className="flex items-center justify-between gap-2">
+                              <h4 className="text-xs font-semibold text-slate-900 dark:text-white">
+                                {event.title}
+                              </h4>
+                              <span className="text-[10px] font-mono text-slate-400">
+                                {event.timestamp || 'Recorded'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                              {event.description}
+                            </p>
+                            {event.category === 'unsupported' && (
+                              <span className="inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
+                                Unverified / legacy event type
+                              </span>
+                            )}
+                            {event.ip && (
+                              <span className="text-[10px] font-mono text-slate-400 block mt-0.5">
+                                IP: {event.ip} {event.device ? `· ${event.device}` : ''}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
+                    <span>Timestamp: Genemax Server</span>
+                    <span className="font-mono">UTC+05:30</span>
                   </div>
                 </div>
-              ))}
-            </div>
-
-            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
-              <span>Timestamp: Genemax Server</span>
-              <span className="font-mono">UTC+05:30</span>
-            </div>
-          </div>
+              </>
+            );
+          })()}
 
           {/* Server Documents, Versions & Integrity Card */}
           <div className="mt-6 p-6 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card space-y-4">

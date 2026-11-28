@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { 
   Plus, 
   Printer, 
@@ -8,12 +8,31 @@ import {
   Upload,
   Award,
   History,
+  Search,
+  Eye,
+  ChevronDown,
+  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api } from '../../services/api';
+import {
+  buildManagedDocumentRows,
+  DocumentSortBy,
+  filterAndSortDocuments,
+} from '../../utils/documentManagement';
 
 export const DocumentsReceiptsView: React.FC = () => {
-  const { receipts, acknowledgePayment, addToast } = useApp();
+  const {
+    agreements,
+    receipts,
+    setReceipts,
+    acknowledgePayment,
+    setSelectedAgreementId,
+    setActiveView,
+    addToast,
+  } = useApp();
 
   const [activeTab, setActiveTab] = useState<'documents' | 'receipts'>('documents');
   const [documents, setDocuments] = useState<any[]>([]);
@@ -21,6 +40,42 @@ export const DocumentsReceiptsView: React.FC = () => {
   const [selectedDocLogs, setSelectedDocLogs] = useState<{ title: string; logs: any[] } | null>(null);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [docsError, setDocsError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [sortBy, setSortBy] = useState<DocumentSortBy>('updated_desc');
+  const [page, setPage] = useState(1);
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
+
+  const managedRows = useMemo(
+    () => buildManagedDocumentRows(documents, agreements),
+    [documents, agreements],
+  );
+
+  const categoryOptions = useMemo(() => {
+    const unique = new Set<string>();
+    for (const row of managedRows) {
+      if (row.category) unique.add(row.category);
+    }
+    return Array.from(unique).sort();
+  }, [managedRows]);
+
+  const paginatedDocs = useMemo(
+    () =>
+      filterAndSortDocuments(managedRows, {
+        search: searchQuery,
+        status: statusFilter,
+        category: categoryFilter,
+        dateFrom,
+        dateTo,
+        sortBy,
+        page,
+        pageSize: 8,
+      }),
+    [managedRows, searchQuery, statusFilter, categoryFilter, dateFrom, dateTo, sortBy, page],
+  );
 
   const loadDocumentsAndCertificates = async () => {
     setLoadingDocs(true);
@@ -92,19 +147,75 @@ export const DocumentsReceiptsView: React.FC = () => {
     }
   };
 
-  const [selectedReceiptId, setSelectedReceiptId] = useState<string>('RCT-0091');
+  const pendingReceipts = receipts.filter((r) => r.status !== 'Issued');
+  const [selectedReceiptId, setSelectedReceiptId] = useState<string>('');
   const [modalOpen, setModalOpen] = useState(false);
-  const [ackPayer, setAckPayer] = useState('Meera Iyer');
-  const [ackRef, setAckRef] = useState('UPI-202611259981');
-  const [ackMode, setAckMode] = useState<'UPI' | 'Bank transfer'>('UPI');
+  const [modalMode, setModalMode] = useState<'acknowledge' | 'create'>('acknowledge');
+  const [ackReceiptId, setAckReceiptId] = useState<string>('');
+  const [ackRef, setAckRef] = useState('');
+  const [ackMode, setAckMode] = useState<'UPI' | 'Bank transfer' | 'Credit Card'>('UPI');
+  const [newPayerName, setNewPayerName] = useState('');
+  const [newAmount, setNewAmount] = useState('');
+  const [newPurpose, setNewPurpose] = useState('');
+  const [submittingReceipt, setSubmittingReceipt] = useState(false);
 
   const selectedReceipt = receipts.find(r => r.id === selectedReceiptId) || receipts[0];
 
-  const handleAcknowledgeSubmit = (e: React.FormEvent) => {
+  const openReceiptModal = () => {
+    if (pendingReceipts.length > 0) {
+      setModalMode('acknowledge');
+      setAckReceiptId(pendingReceipts[0].uuid || pendingReceipts[0].id);
+    } else {
+      setModalMode('create');
+    }
+    setAckRef('');
+    setModalOpen(true);
+  };
+
+  const handleAcknowledgeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    acknowledgePayment('RCT-PENDING', ackRef);
-    setModalOpen(false);
-    setSelectedReceiptId('RCT-0092');
+    if (submittingReceipt) return;
+    setSubmittingReceipt(true);
+    try {
+      if (modalMode === 'acknowledge') {
+        if (!ackReceiptId || !ackRef.trim()) return;
+        const updated = await acknowledgePayment(ackReceiptId, ackRef.trim(), ackMode);
+        if (updated) {
+          setSelectedReceiptId(updated.id);
+          setModalOpen(false);
+        }
+      } else {
+        const parsedAmount = Number(newAmount);
+        if (!newPayerName.trim() || !newPurpose.trim() || !Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+          addToast('Validation Error', 'Payer name, purpose, and a positive amount are required.', 'error');
+          return;
+        }
+        const created = await api.createPaymentReceipt({
+          payer_name: newPayerName.trim(),
+          amount: parsedAmount,
+          purpose: newPurpose.trim(),
+          payment_mode: ackRef.trim() ? ackMode : undefined,
+          tx_reference: ackRef.trim() || undefined,
+          issue_immediately: Boolean(ackRef.trim()),
+        });
+        setReceipts(prev => [created, ...prev]);
+        setSelectedReceiptId(created.id);
+        setNewPayerName('');
+        setNewAmount('');
+        setNewPurpose('');
+        setAckRef('');
+        setModalOpen(false);
+        addToast(
+          created.status === 'Issued' ? 'Receipt Issued' : 'Pending Receipt Recorded',
+          `${created.id} saved to database.`,
+          'success',
+        );
+      }
+    } catch (err: any) {
+      addToast('Receipt Error', err.message || 'Could not process receipt.', 'error');
+    } finally {
+      setSubmittingReceipt(false);
+    }
   };
 
   const handlePrintReceipt = () => {
@@ -159,11 +270,11 @@ export const DocumentsReceiptsView: React.FC = () => {
             </label>
           ) : (
             <button
-              onClick={() => setModalOpen(true)}
+              onClick={openReceiptModal}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 transition-colors shadow-subtle"
             >
               <Plus size={14} />
-              <span>Acknowledge payment</span>
+              <span>{pendingReceipts.length > 0 ? 'Acknowledge payment' : 'Record receipt'}</span>
             </button>
           )}
         </div>
@@ -239,81 +350,304 @@ export const DocumentsReceiptsView: React.FC = () => {
 
           {/* Stored Documents & Immutable Version Vault */}
           <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <FileText size={16} className="text-brand-600" />
                 <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
                   Private Document Vault & Version History
                 </h3>
               </div>
-              <span className="text-xs text-slate-500">{documents.length} document(s)</span>
+              <span className="text-xs text-slate-500">
+                {paginatedDocs.totalItems} of {managedRows.length} document(s)
+              </span>
             </div>
+
+            {/* Search, Filter & Sort Toolbar */}
+            <div className="px-6 py-3.5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30 grid grid-cols-1 md:grid-cols-12 gap-2.5 items-center text-xs">
+              <div className="md:col-span-4 relative">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Search agreement, recipient, or ref..."
+                  className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400"
+                />
+              </div>
+
+              <div className="md:col-span-2">
+                <select
+                  aria-label="Filter by status"
+                  value={statusFilter}
+                  onChange={(e) => {
+                    setStatusFilter(e.target.value);
+                    setPage(1);
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="Signed">Signed Only</option>
+                  <option value="Unsigned">Unsigned Only</option>
+                  <option value="Completed">Completed</option>
+                  <option value="Partially signed">Partially signed</option>
+                  <option value="Awaiting signature">Awaiting signature</option>
+                  <option value="Awaiting OTP">Awaiting OTP</option>
+                  <option value="Draft">Draft</option>
+                  <option value="Rejected">Rejected</option>
+                  <option value="Expired">Expired</option>
+                  <option value="Cancelled">Cancelled</option>
+                </select>
+              </div>
+
+              <div className="md:col-span-2">
+                <select
+                  aria-label="Filter by category"
+                  value={categoryFilter}
+                  onChange={(e) => {
+                    setCategoryFilter(e.target.value);
+                    setPage(1);
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                >
+                  <option value="all">All Categories</option>
+                  {categoryOptions.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="md:col-span-2">
+                <select
+                  aria-label="Sort documents"
+                  value={sortBy}
+                  onChange={(e) => {
+                    setSortBy(e.target.value as DocumentSortBy);
+                    setPage(1);
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                >
+                  <option value="updated_desc">Modified (Newest)</option>
+                  <option value="updated_asc">Modified (Oldest)</option>
+                  <option value="created_desc">Created (Newest)</option>
+                  <option value="created_asc">Created (Oldest)</option>
+                  <option value="signed_desc">Signed Date (Newest)</option>
+                  <option value="signed_asc">Signed Date (Oldest)</option>
+                </select>
+              </div>
+
+              <div className="md:col-span-2 flex items-center gap-1.5">
+                <input
+                  type="date"
+                  aria-label="From date"
+                  value={dateFrom}
+                  onChange={(e) => {
+                    setDateFrom(e.target.value);
+                    setPage(1);
+                  }}
+                  className="w-full px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-[11px]"
+                />
+                {(searchQuery || statusFilter !== 'all' || categoryFilter !== 'all' || dateFrom || dateTo) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setStatusFilter('all');
+                      setCategoryFilter('all');
+                      setDateFrom('');
+                      setDateTo('');
+                      setPage(1);
+                    }}
+                    className="shrink-0 px-2 py-1.5 rounded-lg text-[11px] font-medium text-slate-500 hover:text-slate-900 dark:hover:text-white border border-slate-200 dark:border-slate-700"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400 text-[11px] bg-slate-50/60 dark:bg-slate-900/40">
-                    <th className="py-3 px-6 font-medium">Document</th>
-                    <th className="py-3 px-6 font-medium">Kind</th>
-                    <th className="py-3 px-6 font-medium">Version</th>
+                    <th className="py-3 px-6 font-medium">Document & Reference</th>
+                    <th className="py-3 px-6 font-medium">Recipient</th>
+                    <th className="py-3 px-6 font-medium">Status</th>
+                    <th className="py-3 px-6 font-medium">Versions & Activity</th>
                     <th className="py-3 px-6 font-medium">SHA-256</th>
                     <th className="py-3 px-6 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                  {documents.length === 0 ? (
+                  {loadingDocs ? (
                     <tr>
-                      <td colSpan={5} className="py-6 px-6 text-center text-slate-500">
-                        {loadingDocs ? 'Loading documents...' : 'No documents stored yet.'}
+                      <td colSpan={6} className="py-6 px-6 text-center text-slate-500">
+                        Loading documents...
+                      </td>
+                    </tr>
+                  ) : paginatedDocs.items.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-6 px-6 text-center text-slate-500">
+                        {managedRows.length === 0
+                          ? 'No documents stored yet.'
+                          : 'No documents match your active search or filter criteria.'}
                       </td>
                     </tr>
                   ) : (
-                    documents.map((doc) => {
+                    paginatedDocs.items.map((row) => {
+                      const { doc, agreement } = row;
                       const latest = doc.versions?.[0];
+                      const isExpanded = expandedDocId === doc.id;
                       return (
-                        <tr key={doc.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
-                          <td className="py-3.5 px-6 font-semibold text-slate-900 dark:text-white">{doc.title}</td>
-                          <td className="py-3.5 px-6 uppercase text-[11px] text-slate-500">{doc.doc_kind}</td>
-                          <td className="py-3.5 px-6 text-slate-700 dark:text-slate-300">v{doc.current_version}</td>
-                          <td className="py-3.5 px-6 font-mono text-[11px] text-slate-500">
-                            {latest ? `${latest.sha256_hash.slice(0, 16)}...` : '—'}
-                          </td>
-                          <td className="py-3.5 px-6">
-                            {latest && (
-                              <div className="flex items-center gap-3">
-                                <button
-                                  type="button"
-                                  onClick={() => handleVerifyIntegrity(doc.id, latest.id)}
-                                  className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline font-medium"
-                                >
-                                  <ShieldCheck size={12} />
-                                  <span>Verify</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleViewAccessLogs(doc)}
-                                  className="inline-flex items-center gap-1 text-slate-600 dark:text-slate-400 hover:underline font-medium"
-                                >
-                                  <History size={12} />
-                                  <span>Logs</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleBlobDownload(doc.id, latest.id, latest.file_name)}
-                                  className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-400 hover:underline font-medium"
-                                >
-                                  <Download size={12} />
-                                  <span>Download</span>
-                                </button>
+                        <React.Fragment key={doc.id}>
+                          <tr className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
+                            <td className="py-3.5 px-6">
+                              <div className="font-semibold text-slate-900 dark:text-white">{doc.title}</div>
+                              <div className="text-[11px] font-mono text-slate-400">
+                                {row.referenceNumber} · {row.category}
                               </div>
-                            )}
-                          </td>
-                        </tr>
+                            </td>
+                            <td className="py-3.5 px-6 text-slate-600 dark:text-slate-300">
+                              {row.recipientLabel}
+                            </td>
+                            <td className="py-3.5 px-6">
+                              <span
+                                className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                  row.isSigned
+                                    ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
+                                    : 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300'
+                                }`}
+                              >
+                                {row.isSigned ? 'Signed' : 'Unsigned'} · {row.statusLabel}
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-6 text-slate-700 dark:text-slate-300">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedDocId(isExpanded ? null : doc.id)}
+                                className="inline-flex items-center gap-1 hover:text-brand-600 dark:hover:text-brand-400 font-medium"
+                              >
+                                <span>v{doc.current_version} ({row.activityCount} events)</span>
+                                {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                              </button>
+                            </td>
+                            <td className="py-3.5 px-6 font-mono text-[11px] text-slate-500">
+                              {latest ? `${latest.sha256_hash.slice(0, 16)}...` : '—'}
+                            </td>
+                            <td className="py-3.5 px-6">
+                              <div className="flex flex-wrap items-center gap-3">
+                                {agreement && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedAgreementId(agreement.id);
+                                      setActiveView('agreement_detail');
+                                    }}
+                                    className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-300 hover:underline font-medium"
+                                  >
+                                    <Eye size={12} />
+                                    <span>Preview</span>
+                                  </button>
+                                )}
+                                {latest && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleVerifyIntegrity(doc.id, latest.id)}
+                                      className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline font-medium"
+                                    >
+                                      <ShieldCheck size={12} />
+                                      <span>Verify</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleViewAccessLogs(doc)}
+                                      className="inline-flex items-center gap-1 text-slate-600 dark:text-slate-400 hover:underline font-medium"
+                                    >
+                                      <History size={12} />
+                                      <span>Logs</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleBlobDownload(doc.id, latest.id, latest.file_name)}
+                                      className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-400 hover:underline font-medium"
+                                    >
+                                      <Download size={12} />
+                                      <span>Download</span>
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="bg-slate-50/70 dark:bg-slate-900/60">
+                              <td colSpan={6} className="px-6 py-3">
+                                <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-2">
+                                  Version History ({doc.versions?.length || 0})
+                                </div>
+                                <div className="space-y-1.5">
+                                  {(doc.versions || []).map((v: any) => (
+                                    <div
+                                      key={v.id}
+                                      className="flex flex-wrap items-center justify-between gap-2 text-[11px] px-3 py-1.5 rounded bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700"
+                                    >
+                                      <span className="font-medium text-slate-800 dark:text-slate-200">
+                                        v{v.version_number} — {v.file_name}
+                                      </span>
+                                      <span className="font-mono text-slate-500">
+                                        {v.sha256_hash.slice(0, 16)}... · {new Date(v.created_at).toLocaleString()}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleBlobDownload(doc.id, v.id, v.file_name)}
+                                        className="text-brand-600 dark:text-brand-400 hover:underline font-medium"
+                                      >
+                                        Download v{v.version_number}
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })
                   )}
                 </tbody>
               </table>
             </div>
+
+            {paginatedDocs.totalPages > 1 && (
+              <div className="px-6 py-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500">
+                <span>
+                  Page {paginatedDocs.currentPage} of {paginatedDocs.totalPages}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={paginatedDocs.currentPage <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40"
+                  >
+                    <ChevronLeft size={12} />
+                    <span>Prev</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={paginatedDocs.currentPage >= paginatedDocs.totalPages}
+                    onClick={() => setPage((p) => Math.min(paginatedDocs.totalPages, p + 1))}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 disabled:opacity-40"
+                  >
+                    <span>Next</span>
+                    <ChevronRight size={12} />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {selectedDocLogs && (
@@ -485,7 +819,7 @@ export const DocumentsReceiptsView: React.FC = () => {
                 <span className="text-[11px] font-medium">Verified Payment Token</span>
               </div>
               <span className="text-[10px] font-mono text-slate-400">
-                GSIGN-AUTH-88910
+                {selectedReceipt.verificationToken || selectedReceipt.txRef || selectedReceipt.id}
               </span>
             </div>
           </div>
@@ -494,33 +828,102 @@ export const DocumentsReceiptsView: React.FC = () => {
       </div>
       )}
 
-      {/* Acknowledge Payment Modal */}
+      {/* Acknowledge / Record Payment Receipt Modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 w-full max-w-md shadow-modal space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                Acknowledge Payment
+                {modalMode === 'acknowledge' ? 'Acknowledge Payment' : 'Record Payment Receipt'}
               </h3>
               <button onClick={() => setModalOpen(false)} className="text-slate-400 hover:text-slate-600">
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleAcknowledgeSubmit} className="space-y-4 text-xs">
-              <div>
-                <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
-                  Select Pending Payer
-                </label>
-                <select
-                  value={ackPayer}
-                  onChange={e => setAckPayer(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none"
+            {pendingReceipts.length > 0 && (
+              <div className="flex items-center gap-2 text-xs bg-slate-100 dark:bg-slate-800 p-1 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setModalMode('acknowledge')}
+                  className={`flex-1 py-1.5 rounded-md font-medium transition-colors ${modalMode === 'acknowledge' ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-subtle' : 'text-slate-500'}`}
                 >
-                  <option value="Meera Iyer">Meera Iyer (₹30,000 · Advisory Retainer)</option>
-                  <option value="Dev Patel">Dev Patel (₹85,000 · Service Contract)</option>
-                </select>
+                  Acknowledge Pending ({pendingReceipts.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setModalMode('create')}
+                  className={`flex-1 py-1.5 rounded-md font-medium transition-colors ${modalMode === 'create' ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-subtle' : 'text-slate-500'}`}
+                >
+                  New Receipt
+                </button>
               </div>
+            )}
+
+            <form onSubmit={handleAcknowledgeSubmit} className="space-y-4 text-xs">
+              {modalMode === 'acknowledge' ? (
+                <div>
+                  <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                    Select Pending Receipt
+                  </label>
+                  <select
+                    value={ackReceiptId}
+                    onChange={e => setAckReceiptId(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none"
+                  >
+                    {pendingReceipts.map((pr) => (
+                      <option key={pr.uuid || pr.id} value={pr.uuid || pr.id}>
+                        {pr.payer} (₹{pr.amount.toLocaleString('en-IN')} · {pr.purpose})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                      Payer Name *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={newPayerName}
+                      onChange={e => setNewPayerName(e.target.value)}
+                      placeholder="e.g. Meera Iyer"
+                      className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                        Amount (INR) *
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        required
+                        value={newAmount}
+                        onChange={e => setNewAmount(e.target.value)}
+                        placeholder="30000"
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                        Purpose *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newPurpose}
+                        onChange={e => setNewPurpose(e.target.value)}
+                        placeholder="Advisory retainer"
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div>
                 <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
@@ -532,19 +935,21 @@ export const DocumentsReceiptsView: React.FC = () => {
                   className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 outline-none"
                 >
                   <option value="UPI">UPI</option>
-                  <option value="Bank transfer">Bank transfer / NEFT</option>
+                  <option value="Bank transfer">Bank transfer</option>
+                  <option value="Credit Card">Credit Card</option>
                 </select>
               </div>
 
               <div>
                 <label className="font-medium text-slate-700 dark:text-slate-300 block mb-1">
-                  Transaction Reference (UTR / UPI Ref)
+                  Transaction Reference (UTR / UPI Ref){modalMode === 'acknowledge' ? ' *' : ' (optional for pending)'}
                 </label>
                 <input
                   type="text"
-                  required
+                  required={modalMode === 'acknowledge'}
                   value={ackRef}
                   onChange={e => setAckRef(e.target.value)}
+                  placeholder="e.g. UPI-202611259981"
                   className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-800 dark:text-slate-200 font-mono outline-none"
                 />
               </div>
@@ -559,9 +964,10 @@ export const DocumentsReceiptsView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg text-white bg-brand-600 hover:bg-brand-700 font-medium shadow-subtle"
+                  disabled={submittingReceipt}
+                  className="px-4 py-1.5 rounded-lg text-white bg-brand-600 hover:bg-brand-700 font-medium shadow-subtle disabled:opacity-50"
                 >
-                  Confirm & Issue Receipt
+                  {submittingReceipt ? 'Saving...' : modalMode === 'acknowledge' ? 'Confirm & Issue Receipt' : 'Save Receipt'}
                 </button>
               </div>
             </form>

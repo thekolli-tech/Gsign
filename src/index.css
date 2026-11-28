@@ -12,6 +12,15 @@
   input, select, textarea {
     @apply text-slate-900 dark:text-slate-100;
   }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [tabindex]:focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-600;
+  }
 }
 
 /* Subtle, clean enterprise scrollbar */

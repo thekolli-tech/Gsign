@@ -5,6 +5,8 @@ import { RolesGuard } from './roles.guard';
 import { PermissionsGuard } from './permissions.guard';
 import { SuperAdminGuard } from './super-admin.guard';
 import { SessionService, ActiveSession } from '../../auth/session.service';
+import { DatabaseService } from '../../database/database.service';
+import { TemplatesService } from '../../templates/templates.service';
 
 describe('Security Guards & RBAC Enforcement (Milestone 1)', () => {
   let reflector: Reflector;
@@ -142,6 +144,75 @@ describe('Security Guards & RBAC Enforcement (Milestone 1)', () => {
       });
 
       expect(() => superAdminGuard.canActivate(context)).toThrow(ForbiddenException);
+    });
+  });
+
+  describe('DatabaseService transaction-local context & no-runtime-DDL readiness', () => {
+    it('executeWithTenantContext uses transaction-local set_config and rolls back on error', async () => {
+      const queries: Array<{ sql: string; params?: any[] }> = [];
+      const mockClient = {
+        query: jest.fn(async (sql: string, params?: any[]) => {
+          queries.push({ sql, params });
+          return { rows: [] };
+        }),
+        release: jest.fn(),
+      };
+      const db = new DatabaseService({ get: () => undefined } as any);
+      (db as any).pool = { connect: jest.fn().mockResolvedValue(mockClient) };
+
+      await expect(
+        db.executeWithTenantContext('11111111-1111-1111-1111-111111111111', async () => {
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+
+      expect(queries[0].sql).toBe('BEGIN');
+      expect(queries[1].sql).toContain("set_config('app.current_tenant_id', $1, true)");
+      expect(queries[2].sql).toContain("set_config('app.is_super_admin', 'false', true)");
+      expect(queries[3].sql).toBe('ROLLBACK');
+      expect(mockClient.release).toHaveBeenCalled();
+    });
+
+    it('executeAsSuperAdmin uses transaction-local set_config and commits on success', async () => {
+      const queries: string[] = [];
+      const mockClient = {
+        query: jest.fn(async (sql: string) => {
+          queries.push(sql);
+          return { rows: [] };
+        }),
+        release: jest.fn(),
+      };
+      const db = new DatabaseService({ get: () => undefined } as any);
+      (db as any).pool = { connect: jest.fn().mockResolvedValue(mockClient) };
+
+      await db.executeAsSuperAdmin(async (client) => client.query('SELECT 1'));
+
+      expect(queries).toEqual([
+        'BEGIN',
+        "SELECT set_config('app.is_super_admin', 'true', true)",
+        "SELECT set_config('app.current_tenant_id', '', true)",
+        'SELECT 1',
+        'COMMIT',
+      ]);
+      expect(mockClient.release).toHaveBeenCalled();
+    });
+
+    it('TemplatesService.listTemplates does not execute runtime DDL', async () => {
+      const executedSql: string[] = [];
+      const mockClient = {
+        query: jest.fn(async (sql: string) => {
+          executedSql.push(sql);
+          return { rows: [] };
+        }),
+      };
+      const dbMock: any = {
+        executeWithTenantContext: jest.fn(async (_t: string, cb: any) => cb(mockClient)),
+      };
+      const svc = new TemplatesService(dbMock);
+      await svc.listTemplates('11111111-1111-1111-1111-111111111111', false, { isSuperAdmin: false });
+
+      const joined = executedSql.join('\n');
+      expect(joined).not.toMatch(/CREATE TABLE|ALTER TABLE|DROP POLICY|CREATE POLICY/i);
     });
   });
 });

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS tenants (
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS deleted_by UUID;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS branding_json JSONB;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS feature_flags_json JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants(slug);
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
@@ -231,11 +232,14 @@ CREATE TABLE IF NOT EXISTS payments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     subscription_id UUID REFERENCES tenant_subscriptions(id) ON DELETE SET NULL,
+    registration_id UUID REFERENCES company_registrations(id) ON DELETE SET NULL,
+    checkout_reference VARCHAR(128),
+    idempotency_key VARCHAR(128),
     amount NUMERIC(10, 2) NOT NULL,
     currency VARCHAR(3) NOT NULL DEFAULT 'INR',
     provider VARCHAR(32) NOT NULL DEFAULT 'SIMULATED', -- RAZORPAY, STRIPE, MANUAL, SIMULATED
     provider_transaction_id VARCHAR(128),
-    status VARCHAR(32) NOT NULL DEFAULT 'PENDING', -- PENDING, COMPLETED, FAILED, REFUNDED
+    status VARCHAR(32) NOT NULL DEFAULT 'PAYMENT_PENDING', -- PAYMENT_PENDING, PAYMENT_PROCESSING, PAYMENT_FAILED, PAYMENT_CANCELLED, PAYMENT_COMPLETED, COMPLETED
     payment_method VARCHAR(64),
     verified_at TIMESTAMPTZ,
     metadata JSONB NOT NULL DEFAULT '{}',
@@ -244,6 +248,14 @@ CREATE TABLE IF NOT EXISTS payments (
 
 CREATE INDEX IF NOT EXISTS idx_payments_tenant_id ON payments(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_checkout_reference ON payments(checkout_reference) WHERE checkout_reference IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_idempotency_key ON payments(idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_payments_registration_id ON payments(registration_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_unique_real_provider_tx
+  ON payments (provider, provider_transaction_id)
+  WHERE provider_transaction_id IS NOT NULL
+    AND provider <> 'SIMULATED'
+    AND status IN ('PAYMENT_COMPLETED', 'COMPLETED');
 
 -- 16. Invoices
 CREATE TABLE IF NOT EXISTS invoices (
@@ -260,6 +272,121 @@ CREATE TABLE IF NOT EXISTS invoices (
 );
 
 CREATE INDEX IF NOT EXISTS idx_invoices_tenant_id ON invoices(tenant_id);
+
+-- 16a. Payment Receipts (Acknowledged & Pending Agreement/Retainer Receipts)
+CREATE TABLE IF NOT EXISTS payment_receipts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    receipt_number VARCHAR(64) NOT NULL UNIQUE,
+    agreement_id UUID REFERENCES agreements(id) ON DELETE SET NULL,
+    agreement_number VARCHAR(64),
+    payer_name VARCHAR(255) NOT NULL,
+    amount NUMERIC(12, 2) NOT NULL,
+    amount_in_words VARCHAR(500) NOT NULL,
+    payment_mode VARCHAR(64) NOT NULL DEFAULT 'Pending',
+    tx_reference VARCHAR(128),
+    purpose VARCHAR(255) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'Payment not confirmed',
+    acknowledged_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    acknowledged_by_name VARCHAR(255),
+    acknowledged_at TIMESTAMPTZ,
+    verification_token VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_receipts_tenant_id ON payment_receipts(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_payment_receipts_status ON payment_receipts(status);
+CREATE INDEX IF NOT EXISTS idx_payment_receipts_agreement_id ON payment_receipts(agreement_id);
+
+ALTER TABLE payment_receipts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payment_receipts FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS tenant_isolation_payment_receipts ON payment_receipts;
+CREATE POLICY tenant_isolation_payment_receipts ON payment_receipts
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- 16b. Enterprise Contact Sales Inquiries (Platform Owner-only RLS)
+CREATE TABLE IF NOT EXISTS sales_inquiries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contact_name VARCHAR(128) NOT NULL,
+    company_name VARCHAR(255) NOT NULL,
+    business_email VARCHAR(255) NOT NULL,
+    phone_number VARCHAR(32),
+    company_size VARCHAR(64) NOT NULL,
+    requested_plan VARCHAR(128) NOT NULL DEFAULT 'Enterprise',
+    monthly_agreements VARCHAR(64),
+    message TEXT,
+    status VARCHAR(32) NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'contacted', 'qualified', 'converted', 'closed')),
+    assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
+    assigned_to_email VARCHAR(255),
+    internal_notes TEXT NOT NULL DEFAULT '',
+    dedup_hash VARCHAR(64),
+    source_ip VARCHAR(64),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sales_inquiries_status ON sales_inquiries(status);
+CREATE INDEX IF NOT EXISTS idx_sales_inquiries_created_at ON sales_inquiries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sales_inquiries_dedup_created ON sales_inquiries(dedup_hash, created_at DESC);
+
+ALTER TABLE sales_inquiries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales_inquiries FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS platform_owner_sales_inquiries ON sales_inquiries;
+CREATE POLICY platform_owner_sales_inquiries ON sales_inquiries
+FOR ALL
+USING (NULLIF(current_setting('app.is_super_admin', true), '') = 'true')
+WITH CHECK (NULLIF(current_setting('app.is_super_admin', true), '') = 'true');
+
+-- 16c. Durable Notification Outbox (No plaintext OTPs/tokens persisted)
+CREATE TABLE IF NOT EXISTS notification_outbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    template_key VARCHAR(64) NOT NULL,
+    recipient_email VARCHAR(255) NOT NULL,
+    subject VARCHAR(255) NOT NULL,
+    idempotency_key VARCHAR(128),
+    status VARCHAR(32) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'sent', 'failed', 'disabled')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    next_retry_at TIMESTAMPTZ,
+    sent_at TIMESTAMPTZ,
+    provider_message_id VARCHAR(128),
+    last_error_code VARCHAR(64),
+    last_error_message VARCHAR(500),
+    safe_metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_retry ON notification_outbox(status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_tenant_id ON notification_outbox(tenant_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_outbox_idempotency ON notification_outbox(idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+ALTER TABLE notification_outbox ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notification_outbox FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS tenant_isolation_notification_outbox ON notification_outbox;
+CREATE POLICY tenant_isolation_notification_outbox ON notification_outbox
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR (tenant_id IS NOT NULL AND tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR (tenant_id IS NOT NULL AND tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+);
 
 -- 17. Audit Logs
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -945,15 +1072,83 @@ WITH CHECK (
     OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
 );
 
--- Grant privileges to application user gsign_app if it exists
+-- 34. Support Access Sessions (migrated from runtime DDL)
+CREATE TABLE IF NOT EXISTS support_access_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    granted_by UUID NOT NULL REFERENCES users(id),
+    granted_by_email VARCHAR(255) NOT NULL,
+    reason TEXT NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'Active',
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_support_access_sessions_tenant_id ON support_access_sessions(tenant_id);
+
+-- RLS on audit_logs and support_access_sessions
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
+ALTER TABLE support_access_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE support_access_sessions FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS tenant_isolation_audit_logs ON audit_logs;
+CREATE POLICY tenant_isolation_audit_logs ON audit_logs
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+DROP POLICY IF EXISTS tenant_isolation_support_access_sessions ON support_access_sessions;
+CREATE POLICY tenant_isolation_support_access_sessions ON support_access_sessions
+FOR ALL
+USING (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+)
+WITH CHECK (
+    NULLIF(current_setting('app.is_super_admin', true), '') = 'true'
+    OR tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+);
+
+-- Grant least-privilege DML to application user gsign_app if it exists
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gsign_app') THEN
         GRANT USAGE ON SCHEMA public TO gsign_app;
-        GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO gsign_app;
-        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO gsign_app;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO gsign_app;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO gsign_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO gsign_app;
+        GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO gsign_app;
+        GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO gsign_app;
+        IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+            REVOKE ALL ON TABLE public.schema_migrations FROM PUBLIC;
+            REVOKE ALL ON TABLE public.schema_migrations FROM gsign_app;
+        END IF;
+        IF to_regclass('public.db_environment_identity') IS NOT NULL THEN
+            REVOKE ALL ON TABLE public.db_environment_identity FROM PUBLIC;
+            REVOKE ALL ON TABLE public.db_environment_identity FROM gsign_app;
+            GRANT SELECT ON TABLE public.db_environment_identity TO gsign_app;
+        END IF;
+        REVOKE INSERT, UPDATE, DELETE ON TABLE public.roles FROM gsign_app;
+        REVOKE INSERT, UPDATE, DELETE ON TABLE public.permissions FROM gsign_app;
+        REVOKE INSERT, UPDATE, DELETE ON TABLE public.role_permissions FROM gsign_app;
+        REVOKE DELETE ON TABLE public.users FROM gsign_app;
+        REVOKE DELETE ON TABLE public.tenants FROM gsign_app;
+        REVOKE DELETE ON TABLE public.subscription_plans FROM gsign_app;
+        REVOKE DELETE ON TABLE public.company_registrations FROM gsign_app;
+        REVOKE DELETE ON TABLE public.user_mfa_configs FROM gsign_app;
+        IF to_regclass('public.payment_receipts') IS NOT NULL THEN
+            REVOKE DELETE ON TABLE public.payment_receipts FROM PUBLIC;
+            REVOKE DELETE ON TABLE public.payment_receipts FROM gsign_app;
+        END IF;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO gsign_app;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO gsign_app;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO gsign_app;
     END IF;
 END
 $$;

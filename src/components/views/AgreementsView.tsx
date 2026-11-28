@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { AgreementStatus } from '../../types';
+import { canSignAgreementStatus } from '../../utils/agreementUi';
 
 export const AgreementsView: React.FC = () => {
   const { 
@@ -204,7 +205,16 @@ export const AgreementsView: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-normal">
-              {filteredAgreements.map(ag => (
+              {filteredAgreements.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-10 px-6 text-center text-xs text-slate-500 dark:text-slate-400">
+                    {agreements.length === 0
+                      ? 'No agreements found yet. Create your first agreement using + New agreement.'
+                      : 'No agreements match the current search or filter criteria.'}
+                  </td>
+                </tr>
+              ) : (
+              filteredAgreements.map(ag => (
                 <tr
                   key={ag.id}
                   onClick={() => {
@@ -230,8 +240,9 @@ export const AgreementsView: React.FC = () => {
                   </td>
                   <td className="py-3.5 px-6 text-right" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1.5">
-                      {ag.status !== 'Completed' && (
+                      {canSignAgreementStatus(ag.status) && (
                         <button
+                          type="button"
                           onClick={() => {
                             setSigningAgreement(ag);
                             setRecipientModalOpen(true);
@@ -243,10 +254,12 @@ export const AgreementsView: React.FC = () => {
                         </button>
                       )}
                       <button
+                        type="button"
                         onClick={() => {
                           setSelectedAgreementId(ag.id);
                           setActiveView('agreement_detail');
                         }}
+                        aria-label={`View details for ${ag.id}`}
                         className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
                         title="View Details"
                       >
@@ -255,7 +268,8 @@ export const AgreementsView: React.FC = () => {
                     </div>
                   </td>
                 </tr>
-              ))}
+              ))
+              )}
             </tbody>
           </table>
         </div>

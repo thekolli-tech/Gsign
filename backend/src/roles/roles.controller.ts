@@ -45,7 +45,18 @@ export class RolesController {
   @Get(':id')
   @ApiOperation({ summary: 'Get role details and mapped permissions' })
   @ApiResponse({ status: 200, description: 'Role details' })
-  async getRoleById(@Param('id') id: string) {
+  async getRoleById(
+    @Param('id') id: string,
+    @CurrentTenant() tenantId: string | null,
+  ) {
+    const params: any[] = [id];
+    const scopeClause = tenantId
+      ? (() => {
+          params.push(tenantId);
+          return `(r.is_system_role = true OR r.tenant_id = $2::uuid)`;
+        })()
+      : `r.is_system_role = true`;
+
     const res = await this.db.query(
       `SELECT r.id, r.name, r.description, r.is_system_role, r.tenant_id,
               COALESCE(
@@ -57,9 +68,9 @@ export class RolesController {
        FROM roles r
        LEFT JOIN role_permissions rp ON r.id = rp.role_id
        LEFT JOIN permissions p ON rp.permission_id = p.id
-       WHERE r.id = $1
+       WHERE r.id = $1::uuid AND ${scopeClause}
        GROUP BY r.id`,
-      [id]
+      params,
     );
 
     if (res.rows.length === 0) {

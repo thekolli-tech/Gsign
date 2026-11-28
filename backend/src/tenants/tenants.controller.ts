@@ -7,6 +7,7 @@ import {
   ForbiddenException,
   Get,
   NotFoundException,
+  Optional,
   Param,
   Patch,
   Post,
@@ -34,8 +35,12 @@ import { CryptoService } from '../auth/crypto.service';
 import { DatabaseService } from '../database/database.service';
 import { RedisService } from '../redis/redis.service';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { PlatformOwnerGuard } from '../common/guards/platform-owner.guard';
 import { SuperAdminGuard } from '../common/guards/super-admin.guard';
-import { CurrentTenant, CurrentUser } from '../common/decorators/auth.decorators';
+import { CurrentTenant, CurrentUser, Public } from '../common/decorators/auth.decorators';
+import { PlatformAnalyticsService } from './platform-analytics.service';
+import { SalesInquiriesService } from './sales-inquiries.service';
+import { CreateSalesInquiryDto, UpdateSalesInquiryDto } from './dto/sales-inquiry.dto';
 
 export class CreateTenantByOwnerDto {
   @IsString()
@@ -121,19 +126,13 @@ class VerifyDomainDto {
 @UseGuards(AuthGuard)
 @Controller('tenants')
 export class TenantsController {
-  private brandingColumnChecked = false;
-
   constructor(
     private readonly db: DatabaseService,
     private readonly redis: RedisService,
     private readonly cryptoService: CryptoService,
+    @Optional() private readonly platformAnalytics?: PlatformAnalyticsService,
+    @Optional() private readonly salesInquiries?: SalesInquiriesService,
   ) {}
-
-  private async ensureBrandingColumn() {
-    if (this.brandingColumnChecked) return;
-    await this.db.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS branding_json JSONB;`);
-    this.brandingColumnChecked = true;
-  }
 
   @Get('current')
   @ApiOperation({ summary: 'Get details for the current active tenant' })
@@ -178,7 +177,6 @@ export class TenantsController {
     if (!tenantId) {
       return {};
     }
-    await this.ensureBrandingColumn();
     const res = await this.db.query(
       `SELECT branding_json FROM tenants WHERE id = $1::uuid LIMIT 1`,
       [tenantId],
@@ -195,7 +193,6 @@ export class TenantsController {
     if (!tenantId) {
       throw new BadRequestException('Tenant context is required to save workspace branding.');
     }
-    await this.ensureBrandingColumn();
 
     const existingRes = await this.db.query(
       `SELECT branding_json FROM tenants WHERE id = $1::uuid LIMIT 1`,
@@ -244,7 +241,6 @@ export class TenantsController {
     if (!tenantId) {
       throw new BadRequestException('Tenant context is required to verify a custom domain.');
     }
-    await this.ensureBrandingColumn();
 
     const domain = dto.domain.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
     if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain)) {
@@ -271,14 +267,8 @@ export class TenantsController {
       aaaaRecords = [];
     }
 
-    const expectedTargets = ['cname.vercel-dns.com', 'vercel-dns.com', 'gsign.in', 'www.gsign.in'];
-    const cnameMatched = cnameRecords.some((target) => {
-      const clean = target.toLowerCase().replace(/\.$/, '');
-      return expectedTargets.some((exp) => clean === exp || clean.endsWith(`.${exp}`));
-    });
     const hasLiveIp = aRecords.length > 0 || aaaaRecords.length > 0;
-    const isGsignSubdomain = domain === 'gsign.in' || domain.endsWith('.gsign.in');
-    const verified = cnameMatched || (isGsignSubdomain && hasLiveIp);
+    const verified = cnameRecords.length > 0 || hasLiveIp;
 
     const existingRes = await this.db.query(
       `SELECT branding_json FROM tenants WHERE id = $1::uuid LIMIT 1`,
@@ -303,10 +293,8 @@ export class TenantsController {
       aRecords,
       aaaaRecords,
       message: verified
-        ? `DNS verified for ${domain} (${cnameRecords[0] || aRecords[0] || 'active DNS'}).`
-        : cnameRecords.length > 0
-          ? `CNAME for ${domain} points to ${cnameRecords[0]} instead of cname.vercel-dns.com.`
-          : `No CNAME record found for ${domain}. Add CNAME pointing to cname.vercel-dns.com and retry.`,
+        ? `DNS verified for ${domain} (${cnameRecords[0] || aRecords[0] || aaaaRecords[0] || 'active DNS'}).`
+        : `No active DNS records found for ${domain}. Ensure the domain exists and has valid DNS records, then retry.`,
     };
   }
 
@@ -706,31 +694,14 @@ export class TenantsController {
     ];
   }
 
-  private async ensureSupportAccessTable() {
-    await this.db.query(`
-      CREATE TABLE IF NOT EXISTS support_access_sessions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-        granted_by UUID NOT NULL REFERENCES users(id),
-        granted_by_email VARCHAR(255) NOT NULL,
-        reason TEXT NOT NULL,
-        status VARCHAR(32) NOT NULL DEFAULT 'Active',
-        expires_at TIMESTAMPTZ NOT NULL,
-        revoked_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-  }
-
   @UseGuards(SuperAdminGuard)
   @Get('platform/support-access')
   @ApiOperation({ summary: 'List audit-logged support access sessions (Super Admin only)' })
   async getSupportAccessSessions() {
-    await this.ensureSupportAccessTable();
-    await this.db.query(
-      `UPDATE support_access_sessions SET status = 'Expired' WHERE status = 'Active' AND expires_at <= NOW()`,
-    );
     const res = await this.db.executeAsSuperAdmin(async (client) => {
+      await client.query(
+        `UPDATE support_access_sessions SET status = 'Expired' WHERE status = 'Active' AND expires_at <= NOW()`,
+      );
       return client.query(
         `SELECT s.id, s.tenant_id, t.name AS tenant_name, s.granted_by_email,
                 s.reason, s.status, s.expires_at, s.revoked_at, s.created_at
@@ -755,7 +726,6 @@ export class TenantsController {
       throw new BadRequestException('Tenant and mandatory audit reason are required.');
     }
     const mins = Math.min(Math.max(Number(body.duration_minutes) || 30, 5), 240);
-    await this.ensureSupportAccessTable();
 
     const res = await this.db.executeAsSuperAdmin(async (client) => {
       const ins = await client.query(
@@ -782,7 +752,6 @@ export class TenantsController {
     @CurrentUser() user: any,
     @Req() req: Request,
   ) {
-    await this.ensureSupportAccessTable();
     const res = await this.db.executeAsSuperAdmin(async (client) => {
       const upd = await client.query(
         `UPDATE support_access_sessions
@@ -809,7 +778,6 @@ export class TenantsController {
   @Get('platform/feature-flags')
   @ApiOperation({ summary: 'List per-tenant feature flags (Super Admin only)' })
   async getPlatformFeatureFlags() {
-    await this.db.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS feature_flags_json JSONB;`);
     const res = await this.db.executeAsSuperAdmin(async (client) => {
       return client.query(
         `SELECT t.id, t.name, t.slug, t.status, t.feature_flags_json, sp.name AS plan_name
@@ -846,7 +814,6 @@ export class TenantsController {
     @CurrentUser() user: any,
     @Req() req: Request,
   ) {
-    await this.db.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS feature_flags_json JSONB;`);
     const res = await this.db.executeAsSuperAdmin(async (client) => {
       const upd = await client.query(
         `UPDATE tenants
@@ -867,5 +834,71 @@ export class TenantsController {
       return upd.rows[0];
     });
     return res;
+  }
+
+  @UseGuards(AuthGuard, PlatformOwnerGuard)
+  @Get('platform/analytics')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Platform-wide usage, subscription, revenue, and trend analytics (Platform Owner only)' })
+  async getPlatformAnalytics(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('days') days?: string,
+  ) {
+    const analytics = this.platformAnalytics ?? new PlatformAnalyticsService(this.db);
+    return analytics.getPlatformAnalytics({ from, to, days });
+  }
+
+  @Public()
+  @Post('contact-sales')
+  @ApiOperation({ summary: 'Public enterprise contact sales inquiry submission' })
+  async submitContactSales(@Body() dto: CreateSalesInquiryDto, @Req() req: Request) {
+    const svc = this.salesInquiries ?? new SalesInquiriesService(this.db, this.redis);
+    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+    return svc.submitPublicInquiry(dto, ip);
+  }
+
+  @UseGuards(AuthGuard, PlatformOwnerGuard)
+  @Get('platform/sales-inquiries')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List enterprise sales inquiries (Platform Owner only)' })
+  async listSalesInquiries(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const svc = this.salesInquiries ?? new SalesInquiriesService(this.db, this.redis);
+    return svc.listInquiries({
+      page: page ? Number.parseInt(page, 10) : 1,
+      limit: limit ? Number.parseInt(limit, 10) : 20,
+      status,
+      from,
+      to,
+    });
+  }
+
+  @UseGuards(AuthGuard, PlatformOwnerGuard)
+  @Get('platform/sales-inquiries/:id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get enterprise sales inquiry details (Platform Owner only)' })
+  async getSalesInquiry(@Param('id') id: string) {
+    const svc = this.salesInquiries ?? new SalesInquiriesService(this.db, this.redis);
+    return svc.getInquiry(id);
+  }
+
+  @UseGuards(AuthGuard, PlatformOwnerGuard)
+  @Patch('platform/sales-inquiries/:id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update enterprise sales inquiry status, assignment, and internal notes (Platform Owner only)' })
+  async updateSalesInquiry(
+    @Param('id') id: string,
+    @Body() dto: UpdateSalesInquiryDto,
+    @CurrentUser() user: { id: string; email?: string; role?: string },
+    @Req() req: Request,
+  ) {
+    const svc = this.salesInquiries ?? new SalesInquiriesService(this.db, this.redis);
+    return svc.updateInquiry(id, dto, user, req.ip);
   }
 }

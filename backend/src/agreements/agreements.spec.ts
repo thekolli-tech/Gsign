@@ -1,13 +1,20 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigModule } from '@nestjs/config';
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Client } from 'pg';
 import { DatabaseModule } from '../database/database.module';
 import { DatabaseService } from '../database/database.service';
+import {
+  cleanupSyntheticFixtures,
+  createSyntheticTenantWithAdmin,
+  verifySafeIntegrationTarget,
+} from '../database/test-db-guard';
 import { AgreementsService } from './agreements.service';
 
 describe('AgreementsService & RLS Tenant Isolation', () => {
   let db: DatabaseService;
   let agreementsService: AgreementsService;
+  let adminClient: Client | null = null;
   let tenantAId: string;
   let tenantBId: string;
   let userA: any;
@@ -15,6 +22,8 @@ describe('AgreementsService & RLS Tenant Isolation', () => {
   const createdIds: string[] = [];
 
   beforeAll(async () => {
+    const { adminDbUrl } = await verifySafeIntegrationTarget();
+
     const module: TestingModule = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -30,18 +39,16 @@ describe('AgreementsService & RLS Tenant Isolation', () => {
     agreementsService = module.get<AgreementsService>(AgreementsService);
     await db.onModuleInit();
 
-    const tenantsRes = await db.query(
-      `SELECT id, slug FROM tenants WHERE slug IN ('gsign', 'acme') ORDER BY slug ASC`
-    );
-    const gsign = tenantsRes.rows.find(t => t.slug === 'gsign');
-    const acme = tenantsRes.rows.find(t => t.slug === 'acme');
-    tenantAId = gsign.id;
-    tenantBId = acme.id;
+    adminClient = new Client({ connectionString: adminDbUrl });
+    await adminClient.connect();
 
-    const uARes = await db.query(`SELECT id, email, full_name FROM users WHERE email = 'priya@gsign.in' LIMIT 1`);
-    const uBRes = await db.query(`SELECT id, email, full_name FROM users WHERE email = 'john@acme.com' LIMIT 1`);
-    userA = { ...uARes.rows[0], fullName: uARes.rows[0].full_name, role: 'Company Admin' };
-    userB = { ...uBRes.rows[0], fullName: uBRes.rows[0].full_name, role: 'Company Admin' };
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const fxA = await createSyntheticTenantWithAdmin(adminClient, runId, 'agr-a');
+    const fxB = await createSyntheticTenantWithAdmin(adminClient, runId, 'agr-b');
+    tenantAId = fxA.tenantId;
+    tenantBId = fxB.tenantId;
+    userA = fxA.user;
+    userB = fxB.user;
   });
 
   it('Creates a Draft agreement, edits it, transitions Draft -> Awaiting signature -> Cancelled, and blocks direct Completed transition', async () => {
@@ -123,11 +130,15 @@ describe('AgreementsService & RLS Tenant Isolation', () => {
   });
 
   afterAll(async () => {
-    if (createdIds.length > 0) {
-      await db.executeAsSuperAdmin(async client => {
-        await client.query(`DELETE FROM agreements WHERE id = ANY($1::uuid[])`, [createdIds]);
+    try {
+      await cleanupSyntheticFixtures(adminClient, {
+        agreementIds: createdIds,
+        tenantIds: [tenantAId, tenantBId],
+        userIds: [userA?.id, userB?.id],
       });
+    } finally {
+      if (adminClient) await adminClient.end().catch(() => {});
+      if (db) await db.onModuleDestroy().catch(() => {});
     }
-    await db.onModuleDestroy();
   });
 });

@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Body,
+  Query,
   Req,
   Res,
   HttpCode,
@@ -14,7 +15,6 @@ import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagg
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
-import { VerifyMfaDto, ConfirmEnrollmentDto } from './dto/verify-mfa.dto';
 import { RecoveryCodeDto } from './dto/recovery-code.dto';
 import { DisableMfaDto } from './dto/disable-mfa.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
@@ -27,8 +27,10 @@ import {
   VerifyPasswordOtpDto,
   ResetPasswordWithOtpDto,
 } from './dto/forgot-password.dto';
-import { Public, CurrentUser, CurrentSession } from '../common/decorators/auth.decorators';
+import { Public, CurrentUser, CurrentSession, CurrentTenant, Permissions } from '../common/decorators/auth.decorators';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { SubscriptionGuard } from '../common/guards/subscription.guard';
 import type { ActiveSession } from './session.service';
 
 @ApiTags('Authentication')
@@ -259,26 +261,69 @@ export class AuthController {
     return this.authService.changePassword(user.id, dto);
   }
 
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, SubscriptionGuard, PermissionsGuard)
+  @Permissions('team:invite')
+  @Post('invite')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Invite an employee to the company workspace' })
+  @ApiResponse({ status: 201, description: 'Employee invitation dispatched' })
+  async inviteEmployee(
+    @CurrentUser() user: any,
+    @CurrentTenant() tenantId: string | null,
+    @Body() dto: InviteMemberDto
+  ) {
+    return this.authService.inviteMember({ ...user, tenantId }, dto);
+  }
+
+  @UseGuards(AuthGuard, SubscriptionGuard, PermissionsGuard)
+  @Permissions('team:invite')
   @Post('team/invite')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Invite an employee to the company workspace (No public registration)' })
+  @ApiOperation({ summary: 'Invite an employee to the company workspace (alias)' })
   @ApiResponse({ status: 201, description: 'Employee invitation dispatched' })
   async inviteMember(
     @CurrentUser() user: any,
+    @CurrentTenant() tenantId: string | null,
     @Body() dto: InviteMemberDto
   ) {
-    return this.authService.inviteMember(user, dto);
+    return this.authService.inviteMember({ ...user, tenantId }, dto);
+  }
+
+  @UseGuards(AuthGuard, SubscriptionGuard, PermissionsGuard)
+  @Permissions('team:invite')
+  @Get('invitations')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List workspace invitations for current tenant' })
+  async listInvitations(@CurrentTenant() tenantId: string | null) {
+    return this.authService.listInvitations(tenantId);
+  }
+
+  @Public()
+  @Get('invite-info')
+  @ApiOperation({ summary: 'Validate an employee invitation token and return workspace/email info' })
+  async getInviteInfo(@Query('token') token: string) {
+    return this.authService.getInviteInfo(token);
   }
 
   @Public()
   @Post('accept-invite')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Accept an employee invitation and set password' })
+  @ApiOperation({ summary: 'Accept an employee invitation, set password, and establish session' })
   @ApiResponse({ status: 200, description: 'Invitation accepted and account established' })
-  async acceptInvite(@Body() dto: AcceptInviteDto) {
-    return this.authService.acceptInvite(dto);
+  async acceptInvite(
+    @Body() dto: AcceptInviteDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const ip = (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1';
+    const userAgent = req.headers['user-agent'] || 'Unknown';
+    const result = await this.authService.acceptInvite(dto, ip, userAgent);
+    if (result.session?.sessionId) {
+      this.setSessionCookie(res, result.session.sessionId);
+    }
+    return result;
   }
 
   @Public()

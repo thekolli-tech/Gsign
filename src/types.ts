@@ -55,7 +55,8 @@ export interface Agreement {
 }
 
 export interface Receipt {
-  id: string; // e.g. "RCT-0091"
+  id: string; // e.g. "RCT-2026-A1B2C3"
+  uuid?: string;
   payer: string;
   amount: number;
   amountInWords: string;
@@ -66,6 +67,7 @@ export interface Receipt {
   purpose: string;
   acknowledgedBy: string;
   agreementId?: string;
+  verificationToken?: string;
 }
 
 export interface TeamMember {
@@ -100,12 +102,18 @@ export interface PricingPlan {
 
 export interface TemplateField {
   id: string;
-  type: 'Text' | 'Date' | 'Dropdown' | 'Checkbox' | 'File upload' | 'Signature' | 'Initials' | 'Witness' | 'Payment details';
+  type: 'Text' | 'Date' | 'Dropdown' | 'Checkbox' | 'File upload' | 'Signature' | 'Initials' | 'Witness' | 'Payment details' | 'Thumb Impression';
   label: string;
   placeholder?: string;
   required: boolean;
   signingMethod?: 'Basic electronic (drawn)' | 'OTP verified' | 'Aadhaar eSign' | 'DSC';
   value?: string;
+  page?: number;
+  x?: number; // Normalized 0..100 percentage from left edge of page
+  y?: number; // Normalized 0..100 percentage from top edge of page
+  width?: number; // Normalized percentage width
+  height?: number; // Normalized percentage height
+  assignedRole?: 'Recipient' | 'Witness' | 'Sender';
 }
 
 export interface TemplateVersionSummary {

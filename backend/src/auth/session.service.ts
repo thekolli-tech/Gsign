@@ -126,59 +126,84 @@ export class SessionService {
       expiresAt: expiresAt.toISOString(),
     };
 
-    // 3. Cache session in Redis
+    // 3. Cache session in Redis (best-effort; PostgreSQL remains authoritative)
     const redisKey = `session:${sessionId}`;
-    await this.redis.setex(redisKey, this.maxAgeSeconds, JSON.stringify(sessionData));
+    try {
+      await this.redis.setex(redisKey, this.maxAgeSeconds, JSON.stringify(sessionData));
+    } catch (e: any) {
+      this.logger.warn(`Redis setex failed during createSession; PostgreSQL session remains active: ${e?.message || e}`);
+    }
 
     return sessionData;
   }
 
   /**
    * Retrieves and validates an active session.
+   * PostgreSQL is authoritative for revocation, expiry, and account/tenant status;
+   * Redis serves as a read/TTL cache and never overrides PostgreSQL revocation.
    */
   async getSession(sessionId: string): Promise<ActiveSession | null> {
     if (!sessionId || typeof sessionId !== 'string') {
       return null;
     }
 
-    // 1. Check Redis cache first
-    const cached = await this.redis.get(`session:${sessionId}`);
-    if (cached) {
-      try {
-        const session: ActiveSession = JSON.parse(cached);
-        // Refresh idle TTL
-        await this.redis.expire(`session:${sessionId}`, this.maxAgeSeconds);
-        return session;
-      } catch (e) {
-        this.logger.error('Failed to parse cached session:', e);
+    // 1. Best-effort Redis cache read
+    let cachedSession: ActiveSession | null = null;
+    try {
+      const cached = await this.redis.get(`session:${sessionId}`);
+      if (cached) {
+        cachedSession = JSON.parse(cached);
       }
+    } catch (e: any) {
+      this.logger.warn(`Redis read failed during getSession; falling back to PostgreSQL: ${e?.message || e}`);
     }
 
-    // 2. Fallback to PostgreSQL
-    const res = await this.db.executeAsSuperAdmin(async (client) => {
-      return client.query(
-        `SELECT s.id, s.user_id, s.tenant_id, s.expires_at, s.revoked_at,
-                u.email, u.full_name, u.is_super_admin, u.is_platform_owner, u.must_change_password, u.is_active,
-                t.status as tenant_status, (to_jsonb(t)->>'deleted_at') as tenant_deleted_at
-         FROM sessions s
-         JOIN users u ON s.user_id = u.id
-         LEFT JOIN tenants t ON s.tenant_id = t.id
-         WHERE s.id = $1`,
-        [sessionId]
-      );
-    });
+    // 2. Authoritative PostgreSQL check (fail closed if DB cannot verify)
+    let res: any;
+    try {
+      res = await this.db.executeAsSuperAdmin(async (client) => {
+        return client.query(
+          `SELECT s.id, s.user_id, s.tenant_id, s.expires_at, s.revoked_at,
+                  u.email, u.full_name, u.is_super_admin, u.is_platform_owner, u.must_change_password, u.is_active,
+                  t.status as tenant_status, (to_jsonb(t)->>'deleted_at') as tenant_deleted_at
+           FROM sessions s
+           JOIN users u ON s.user_id = u.id
+           LEFT JOIN tenants t ON s.tenant_id = t.id
+           WHERE s.id = $1`,
+          [sessionId]
+        );
+      });
+    } catch (e: any) {
+      this.logger.error(`PostgreSQL session verification failed; failing closed: ${e?.message || e}`);
+      return null;
+    }
 
-    if (res.rows.length === 0) return null;
+    if (!res || res.rows.length === 0) {
+      await this.safeRedisDel(`session:${sessionId}`);
+      return null;
+    }
     const row = res.rows[0];
 
-    // Check revocation, expiration, user active status, and archived tenant
+    // Check revocation, expiration, user active status, and archived/suspended tenant
+    const tenantStatusLower = String(row.tenant_status || '').toLowerCase();
     if (
       row.revoked_at ||
       new Date(row.expires_at) < new Date() ||
       !row.is_active ||
-      (row.tenant_id && (row.tenant_deleted_at || row.tenant_status === 'Archived'))
+      (row.tenant_id &&
+        (row.tenant_deleted_at || tenantStatusLower === 'archived' || tenantStatusLower === 'suspended'))
     ) {
+      await this.safeRedisDel(`session:${sessionId}`);
       return null;
+    }
+
+    if (cachedSession) {
+      try {
+        await this.redis.expire(`session:${sessionId}`, this.maxAgeSeconds);
+      } catch (e: any) {
+        this.logger.warn(`Redis expire failed during getSession: ${e?.message || e}`);
+      }
+      return cachedSession;
     }
 
     // Reconstruct permissions
@@ -226,11 +251,23 @@ export class SessionService {
       expiresAt: new Date(row.expires_at).toISOString(),
     };
 
-    // Re-populate Redis
+    // Best-effort Redis repopulation
     const ttlSeconds = Math.max(1, Math.floor((new Date(row.expires_at).getTime() - Date.now()) / 1000));
-    await this.redis.setex(`session:${sessionId}`, ttlSeconds, JSON.stringify(sessionData));
+    try {
+      await this.redis.setex(`session:${sessionId}`, ttlSeconds, JSON.stringify(sessionData));
+    } catch (e: any) {
+      this.logger.warn(`Redis setex failed during getSession: ${e?.message || e}`);
+    }
 
     return sessionData;
+  }
+
+  private async safeRedisDel(keys: string | string[]): Promise<void> {
+    try {
+      await this.redis.del(keys);
+    } catch (e: any) {
+      this.logger.warn(`Redis del failed (PostgreSQL revocation remains authoritative): ${e?.message || e}`);
+    }
   }
 
   /**
@@ -243,7 +280,7 @@ export class SessionService {
         [sessionId]
       );
     });
-    await this.redis.del(`session:${sessionId}`);
+    await this.safeRedisDel(`session:${sessionId}`);
   }
 
   /**
@@ -261,7 +298,7 @@ export class SessionService {
 
     const keys = res.rows.map(r => `session:${r.id}`);
     if (keys.length > 0) {
-      await this.redis.del(keys);
+      await this.safeRedisDel(keys);
     }
   }
 
@@ -280,7 +317,7 @@ export class SessionService {
 
     const keys = res.rows.map(r => `session:${r.id}`);
     if (keys.length > 0) {
-      await this.redis.del(keys);
+      await this.safeRedisDel(keys);
     }
   }
 
@@ -299,7 +336,28 @@ export class SessionService {
 
     const keys = res.rows.map((r) => `session:${r.id}`);
     if (keys.length > 0) {
-      await this.redis.del(keys);
+      await this.safeRedisDel(keys);
     }
+  }
+
+  /**
+   * Revokes all active sessions for a specific user within a specific tenant
+   * (e.g. role change or membership deactivation). Leaves other tenants untouched.
+   */
+  async revokeUserTenantSessions(userId: string, tenantId: string): Promise<number> {
+    const res = await this.db.executeAsSuperAdmin(async (client) => {
+      return client.query(
+        `UPDATE sessions SET revoked_at = NOW()
+         WHERE user_id = $1::uuid AND tenant_id = $2::uuid AND revoked_at IS NULL
+         RETURNING id`,
+        [userId, tenantId],
+      );
+    });
+
+    const keys = res.rows.map((r) => `session:${r.id}`);
+    if (keys.length > 0) {
+      await this.safeRedisDel(keys);
+    }
+    return res.rows.length;
   }
 }

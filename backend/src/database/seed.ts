@@ -3,12 +3,17 @@ import * as argon2 from 'argon2';
 
 export async function runSeeds(connectionString?: string) {
   const isProduction = process.env.NODE_ENV === 'production';
+  // Prefer DIRECT_DATABASE_URL (privileged migration/admin credential supplied locally or via CI/CD)
+  // and fall back to DATABASE_URL only when running standalone. Never store owner credentials in Vercel.
   const dbUrl = isProduction
-    ? connectionString || process.env.DATABASE_URL
-    : connectionString || process.env.DATABASE_URL || 'postgres://postgres:gsign_dev_password@127.0.0.1:5432/gsign_db';
+    ? connectionString || process.env.DIRECT_DATABASE_URL || process.env.DATABASE_URL
+    : connectionString ||
+      process.env.DIRECT_DATABASE_URL ||
+      process.env.DATABASE_URL ||
+      'postgres://postgres:gsign_dev_password@127.0.0.1:5432/gsign_db';
 
   if (!dbUrl) {
-    throw new Error('DATABASE_URL is required when NODE_ENV=production.');
+    throw new Error('DIRECT_DATABASE_URL or DATABASE_URL is required when NODE_ENV=production.');
   }
 
   console.log(`Seeding GSIGN database (mode: ${isProduction ? 'production' : 'development'})...`);

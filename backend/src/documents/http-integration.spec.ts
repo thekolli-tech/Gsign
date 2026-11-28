@@ -7,7 +7,13 @@ import { AppModule } from '../app.module';
 import { SessionService } from '../auth/session.service';
 import { DatabaseService } from '../database/database.service';
 import { RedisService } from '../redis/redis.service';
+import { Client } from 'pg';
 import { PdfGeneratorService } from './pdf-generator.service';
+import {
+  assertSafeTestDatabase,
+  isLocalLoopbackHost,
+  verifyStagingDatabaseMarker,
+} from '../database/test-db-guard';
 
 describe('Priority 4.1 HTTP Integration Tests (Supertest + INestApplication)', () => {
   let app: INestApplication;
@@ -16,17 +22,50 @@ describe('Priority 4.1 HTTP Integration Tests (Supertest + INestApplication)', (
   let sessionService: SessionService;
   let pdfGenerator: PdfGeneratorService;
 
-  let tenantAId: string;
-  let tenantBId: string;
+  let tenantAId: string | null = null;
+  let tenantBId: string | null = null;
+  let userAId: string | null = null;
+  let userBId: string | null = null;
+  let createdPoUserId: string | null = null;
   let cookieTenantAAdmin: string;
   let cookieTenantASignatory: string;
   let cookieTenantBAdmin: string;
   let cookiePlatformOwnerNoTenant: string;
-  let signatoryUserId: string;
+  let signatoryUserId: string | null = null;
+  let adminClient: Client | null = null;
   const createdSessionIds: string[] = [];
   const createdAgreementIds: string[] = [];
 
   beforeAll(async () => {
+    const dbUrl =
+      process.env.DATABASE_URL ||
+      'postgres://postgres:gsign_dev_password@127.0.0.1:5432/gsign_db';
+    const dbIdentity = assertSafeTestDatabase(dbUrl, 'DATABASE_URL');
+
+    const adminDbUrl = process.env.ADMIN_DATABASE_URL || dbUrl;
+    const adminIdentity = assertSafeTestDatabase(adminDbUrl, 'ADMIN_DATABASE_URL');
+    if (adminIdentity.host !== dbIdentity.host || adminIdentity.dbName !== dbIdentity.dbName) {
+      throw new Error(
+        `ADMIN_DATABASE_URL (${adminIdentity.host}/${adminIdentity.dbName}) must target the exact same host and database as DATABASE_URL (${dbIdentity.host}/${dbIdentity.dbName}).`,
+      );
+    }
+
+    if (!isLocalLoopbackHost(dbIdentity.host) || process.env.GSIGN_EXPECTED_STAGING_IDENTITY_MARKER) {
+      const markerClient = new Client({ connectionString: dbUrl });
+      await markerClient.connect();
+      try {
+        await verifyStagingDatabaseMarker(markerClient, 'DATABASE_URL');
+      } finally {
+        await markerClient.end().catch(() => {});
+      }
+    }
+
+    adminClient = new Client({ connectionString: adminDbUrl });
+    await adminClient.connect();
+    if (!isLocalLoopbackHost(adminIdentity.host) || process.env.GSIGN_EXPECTED_STAGING_IDENTITY_MARKER) {
+      await verifyStagingDatabaseMarker(adminClient, 'ADMIN_DATABASE_URL');
+    }
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
@@ -49,56 +88,99 @@ describe('Priority 4.1 HTTP Integration Tests (Supertest + INestApplication)', (
     sessionService = app.get(SessionService);
     pdfGenerator = app.get(PdfGeneratorService);
 
-    const tenantsRes = await db.query(
-      `SELECT id, slug FROM tenants WHERE slug IN ('gsign', 'acme') ORDER BY slug ASC`,
-    );
-    tenantAId = tenantsRes.rows.find((t) => t.slug === 'gsign').id;
-    tenantBId = tenantsRes.rows.find((t) => t.slug === 'acme').id;
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    const uARes = await db.query(
-      `SELECT id, email, full_name FROM users WHERE email = 'priya@gsign.in' LIMIT 1`,
+    // Create self-contained synthetic tenants, active subscriptions, and users using adminClient
+    const tARes = await adminClient.query(
+      `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
+       VALUES ('HTTP Test Tenant A', $1, $2, '+91 90000 00001', 'Active')
+       RETURNING id`,
+      [`http-test-a-${runId}`, `admin-a-${runId}@example.com`],
     );
-    const uBRes = await db.query(
-      `SELECT id, email, full_name FROM users WHERE email = 'john@acme.com' LIMIT 1`,
-    );
-    const userA = uARes.rows[0];
-    const userB = uBRes.rows[0];
+    tenantAId = tARes.rows[0].id;
 
-    // Create/reuse a Signatory user & membership for permission boundary tests
-    const sigEmail = 'signatory-http-test@gsign.in';
-    const sigUpsert = await db.executeAsSuperAdmin(async (client) => {
-      let uid: string;
-      const existing = await client.query(`SELECT id FROM users WHERE email = $1`, [sigEmail]);
-      if (existing.rows[0]) {
-        uid = existing.rows[0].id;
-      } else {
-        const ins = await client.query(
-          `INSERT INTO users (email, password_hash, full_name, is_super_admin)
-           VALUES ($1, 'test-hash', 'Signatory Tester', false)
-           RETURNING id`,
-          [sigEmail],
-        );
-        uid = ins.rows[0].id;
-      }
-      const roleRes = await client.query(`SELECT id FROM roles WHERE name = 'Signatory' LIMIT 1`);
-      const sigRoleId = roleRes.rows[0].id;
-      await client.query(
-        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
-         VALUES ($1::uuid, $2::uuid, $3::uuid, 'External', 'Active')
-         ON CONFLICT (tenant_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id`,
-        [tenantAId, uid, sigRoleId],
+    const tBRes = await adminClient.query(
+      `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
+       VALUES ('HTTP Test Tenant B', $1, $2, '+91 90000 00002', 'Active')
+       RETURNING id`,
+      [`http-test-b-${runId}`, `admin-b-${runId}@example.com`],
+    );
+    tenantBId = tBRes.rows[0].id;
+
+    const planRes = await adminClient.query(
+      `SELECT id FROM subscription_plans WHERE slug = 'business' LIMIT 1`,
+    );
+    const businessPlanId = planRes.rows[0].id;
+    for (const tid of [tenantAId, tenantBId]) {
+      await adminClient.query(
+        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
+         VALUES ($1::uuid, $2::uuid, 'monthly', 'ACTIVE', NOW() - INTERVAL '1 day', NOW() + INTERVAL '30 days')`,
+        [tid, businessPlanId],
       );
-      return uid;
-    });
-    signatoryUserId = sigUpsert;
+    }
 
-    const poRes = await db.query(
+    const uARes = await adminClient.query(
+      `INSERT INTO users (email, password_hash, full_name, is_super_admin, is_active)
+       VALUES ($1, 'test-hash', 'HTTP Admin A', false, true)
+       RETURNING id`,
+      [`http-admin-a-${runId}@example.com`],
+    );
+    userAId = uARes.rows[0].id;
+
+    const uBRes = await adminClient.query(
+      `INSERT INTO users (email, password_hash, full_name, is_super_admin, is_active)
+       VALUES ($1, 'test-hash', 'HTTP Admin B', false, true)
+       RETURNING id`,
+      [`http-admin-b-${runId}@example.com`],
+    );
+    userBId = uBRes.rows[0].id;
+
+    const sigRes = await adminClient.query(
+      `INSERT INTO users (email, password_hash, full_name, is_super_admin, is_active)
+       VALUES ($1, 'test-hash', 'Signatory Tester', false, true)
+       RETURNING id`,
+      [`http-signatory-${runId}@example.com`],
+    );
+    signatoryUserId = sigRes.rows[0].id;
+
+    const adminRoleRes = await adminClient.query(`SELECT id FROM roles WHERE name = 'Company Admin' LIMIT 1`);
+    const sigRoleRes = await adminClient.query(`SELECT id FROM roles WHERE name = 'Signatory' LIMIT 1`);
+    const adminRoleId = adminRoleRes.rows[0].id;
+    const sigRoleId = sigRoleRes.rows[0].id;
+
+    await adminClient.query(
+      `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'Executive', 'Active')`,
+      [tenantAId, userAId, adminRoleId],
+    );
+    await adminClient.query(
+      `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'Executive', 'Active')`,
+      [tenantBId, userBId, adminRoleId],
+    );
+    await adminClient.query(
+      `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'External', 'Active')`,
+      [tenantAId, signatoryUserId, sigRoleId],
+    );
+
+    const poRes = await adminClient.query(
       `SELECT id FROM users WHERE is_platform_owner = true LIMIT 1`,
     );
-    const poUserId = poRes.rows[0]?.id || userA.id;
+    let poUserId = poRes.rows[0]?.id;
+    if (!poUserId) {
+      const createdPo = await adminClient.query(
+        `INSERT INTO users (email, password_hash, full_name, is_super_admin, is_platform_owner, is_active)
+         VALUES ($1, 'test-hash', 'HTTP Test PO', true, true, true)
+         RETURNING id`,
+        [`http-po-${runId}@example.com`],
+      );
+      poUserId = createdPo.rows[0].id;
+      createdPoUserId = poUserId;
+    }
 
     const sAdminA = await sessionService.createSession(
-      userA.id,
+      userAId,
       tenantAId,
       '127.0.0.1',
       'Supertest',
@@ -116,7 +198,7 @@ describe('Priority 4.1 HTTP Integration Tests (Supertest + INestApplication)', (
     cookieTenantASignatory = `gsign_session=${sSigA.sessionId}`;
 
     const sAdminB = await sessionService.createSession(
-      userB.id,
+      userBId,
       tenantBId,
       '127.0.0.1',
       'Supertest',
@@ -135,21 +217,30 @@ describe('Priority 4.1 HTTP Integration Tests (Supertest + INestApplication)', (
   });
 
   afterAll(async () => {
-    for (const sid of createdSessionIds) {
-      await sessionService.revokeSession(sid);
-    }
-    for (const uuid of createdAgreementIds) {
-      await db.executeAsSuperAdmin(async (client) => {
-        await client.query(`DELETE FROM agreements WHERE id = $1::uuid`, [uuid]);
-      });
-    }
-    if (signatoryUserId) {
-      await db.executeAsSuperAdmin(async (client) => {
-        await client.query(`DELETE FROM users WHERE id = $1::uuid`, [signatoryUserId]);
-      });
-    }
-    if (app) {
-      await app.close();
+    try {
+      if (sessionService) {
+        for (const sid of createdSessionIds) {
+          await sessionService.revokeSession(sid).catch(() => {});
+        }
+      }
+      if (adminClient) {
+        for (const uuid of createdAgreementIds) {
+          await adminClient.query(`DELETE FROM agreements WHERE id = $1::uuid`, [uuid]).catch(() => {});
+        }
+        if (tenantAId) await adminClient.query(`DELETE FROM tenants WHERE id = $1::uuid`, [tenantAId]).catch(() => {});
+        if (tenantBId) await adminClient.query(`DELETE FROM tenants WHERE id = $1::uuid`, [tenantBId]).catch(() => {});
+        if (userAId) await adminClient.query(`DELETE FROM users WHERE id = $1::uuid`, [userAId]).catch(() => {});
+        if (userBId) await adminClient.query(`DELETE FROM users WHERE id = $1::uuid`, [userBId]).catch(() => {});
+        if (signatoryUserId) {
+          await adminClient.query(`DELETE FROM users WHERE id = $1::uuid`, [signatoryUserId]).catch(() => {});
+        }
+        if (createdPoUserId) {
+          await adminClient.query(`DELETE FROM users WHERE id = $1::uuid`, [createdPoUserId]).catch(() => {});
+        }
+      }
+    } finally {
+      if (adminClient) await adminClient.end().catch(() => {});
+      if (app) await app.close().catch(() => {});
     }
   });
 
