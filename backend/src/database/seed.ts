@@ -141,7 +141,7 @@ export async function runSeeds(connectionString?: string) {
       console.log('Platform Owner already exists. Preserving password and security state for:', ownerEmail);
     }
 
-    // 3.1 Bootstrap Developer / Genemax IT Solution Team Super Admin
+    // 3.1 Bootstrap Developer / Genemax IT Solution Team Workspace Admin (regular Company Admin UI)
     const teamAdminEmail = isProduction
       ? process.env.GSIGN_TEAM_ADMIN_EMAIL
       : process.env.GSIGN_TEAM_ADMIN_EMAIL || 'genemaxit@gmail.com';
@@ -150,35 +150,48 @@ export async function runSeeds(connectionString?: string) {
       : process.env.GSIGN_TEAM_ADMIN_PASSWORD || 'Gmax@2026';
 
     if (teamAdminEmail && teamAdminEmail !== ownerEmail) {
+      await client.query("SET LOCAL app.is_super_admin = 'true';");
+      const genemaxTenantRes = await client.query(
+        `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
+         VALUES ('Genemax IT Solution Private Limited', 'genemax-it-solution', $1, '+91 99000 00001', 'Active')
+         ON CONFLICT (slug) DO UPDATE SET status = 'Active'
+         RETURNING id;`,
+        [teamAdminEmail],
+      );
+      const genemaxTenantId = genemaxTenantRes.rows[0].id;
+
       const existingTeamAdmin = await client.query(
         'SELECT id FROM users WHERE email = $1',
         [teamAdminEmail],
       );
-      if (existingTeamAdmin.rows.length === 0) {
-        if (teamAdminPassword) {
-          const teamAdminHash = await argon2.hash(teamAdminPassword);
-          const teamAdminRes = await client.query(
-            `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
-             VALUES ($1, $2, 'Genemax IT Solution Admin', '+91 99000 00001', true, true, false, true, NOW())
-             RETURNING id;`,
-            [teamAdminEmail, teamAdminHash],
-          );
-          const teamAdminId = teamAdminRes.rows[0].id;
-          console.log('Bootstrapped Team Super Admin:', teamAdminEmail, `(${teamAdminId})`);
-
-          await client.query(
-            `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason, metadata)
-             VALUES ($1, $2, 'PLATFORM_OWNER', 'ADMIN_BOOTSTRAP', 'USER', $3, 'Default developer & Genemax IT Solution team super admin provisioning', '{"provider":"bootstrap"}');`,
-            [teamAdminId, teamAdminEmail, teamAdminId],
-          );
-        }
-      } else {
-        const teamAdminId = existingTeamAdmin.rows[0].id;
+      let teamAdminId: string | null = existingTeamAdmin.rows[0]?.id || null;
+      if (!teamAdminId && teamAdminPassword) {
+        const teamAdminHash = await argon2.hash(teamAdminPassword);
+        const teamAdminRes = await client.query(
+          `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
+           VALUES ($1, $2, 'Genemax IT Solution Team', '+91 99000 00001', false, false, false, true, NOW())
+           RETURNING id;`,
+          [teamAdminEmail, teamAdminHash],
+        );
+        teamAdminId = teamAdminRes.rows[0].id;
+        console.log('Bootstrapped Team Workspace Admin:', teamAdminEmail, `(${teamAdminId})`);
+      } else if (teamAdminId) {
         await client.query(
-          `UPDATE users SET is_super_admin = true, is_platform_owner = true WHERE id = $1;`,
+          `UPDATE users SET is_super_admin = false, is_platform_owner = false WHERE id = $1;`,
           [teamAdminId],
         );
-        console.log('Team Super Admin already exists. Preserving password and security state for:', teamAdminEmail);
+      }
+
+      if (teamAdminId) {
+        const companyAdminRoleId = roleMap.get('Company Admin');
+        if (companyAdminRoleId) {
+          await client.query(
+            `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+             VALUES ($1, $2, $3, 'Executive', 'Active')
+             ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
+            [genemaxTenantId, teamAdminId, companyAdminRoleId],
+          );
+        }
       }
     }
 
@@ -266,103 +279,24 @@ export async function runSeeds(connectionString?: string) {
     }
     console.log('Seeded 3 paid subscription plans (Starter, Growth, Enterprise).');
 
-    let superAdminId: string | null = null;
+    const superAdminId: string | null = null;
     let tenant1Id: string | null = null;
-    let tenant2Id: string | null = null;
-    let user1Id: string | null = null;
-    let user2Id: string | null = null;
+    const tenant2Id: string | null = null;
+    const user1Id: string | null = null;
+    const user2Id: string | null = null;
 
-    if (!isProduction) {
-      // 4. Development Only: Seed Global Super Admin
-      const superAdminPasswordHash = await argon2.hash('SuperAdmin@GSign2026!');
-      const superAdminRes = await client.query(
-        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_active, email_verified_at)
-         VALUES ($1, $2, $3, $4, true, true, NOW())
-         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_super_admin = true
-         RETURNING id;`,
-        ['superadmin@genemax.in', superAdminPasswordHash, 'Sunil G (Super Admin)', '+91 99000 11223']
-      );
-      superAdminId = superAdminRes.rows[0].id;
-      console.log('Seeded Dev Super Admin:', 'superadmin@genemax.in', `(${superAdminId})`);
-
-      // 5. Development Only: Seed Primary & Secondary Demo Tenants
-      const tenant1Res = await client.query(
-        `INSERT INTO tenants (name, slug, cin, gstin, contact_email, contact_phone, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'Active')
-         ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
-         RETURNING id;`,
-        ['GSIGN Pvt Ltd', 'gsign', 'U72200KA2026PTC099881', '29AABCG1234F1Z5', 'admin@gsign.in', '+91 98765 43210']
-      );
-      tenant1Id = tenant1Res.rows[0].id;
-
-      const tenant2Res = await client.query(
-        `INSERT INTO tenants (name, slug, cin, gstin, contact_email, contact_phone, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'Active')
-         ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
-         RETURNING id;`,
-        ['Acme Corporation', 'acme', 'U72200MH2026PTC100222', '27AABCA5678G2Z1', 'admin@acme.com', '+91 91234 56789']
-      );
-      tenant2Id = tenant2Res.rows[0].id;
-      console.log(`Seeded Dev Tenants: [GSIGN: ${tenant1Id}] and [Acme: ${tenant2Id}]`);
-
-      // 6. Development Only: Seed Demo Tenant Admin Users
-      const defaultPasswordHash = await argon2.hash('Password123!');
-
-      const user1Res = await client.query(
-        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_active, email_verified_at)
-         VALUES ($1, $2, $3, $4, false, true, NOW())
-         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
-         RETURNING id;`,
-        ['priya@gsign.in', defaultPasswordHash, 'Priya N (HR Admin)', '+91 98765 44821']
-      );
-      user1Id = user1Res.rows[0].id;
-
-      const user2Res = await client.query(
-        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_active, email_verified_at)
-         VALUES ($1, $2, $3, $4, false, true, NOW())
-         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
-         RETURNING id;`,
-        ['john@acme.com', defaultPasswordHash, 'John Doe (Admin)', '+91 91234 00001']
-      );
-      user2Id = user2Res.rows[0].id;
-
-      // 7. Development Only: Seed Demo Tenant Memberships (Bypassing RLS during administrative seed)
-      await client.query("SET LOCAL app.is_super_admin = 'true';");
-
-      const companyAdminRoleId = roleMap.get('Company Admin')!;
-      await client.query(
-        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
-         VALUES ($1, $2, $3, 'HR', 'Active')
-         ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
-        [tenant1Id, user1Id, companyAdminRoleId]
-      );
-
-      await client.query(
-        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
-         VALUES ($1, $2, $3, 'Executive', 'Active')
-         ON CONFLICT (tenant_id, user_id) DO NOTHING;`,
-        [tenant2Id, user2Id, companyAdminRoleId]
-      );
-
-      // 8. Development Only: Seed Demo Tenant Subscriptions
-      const enterprisePlanId = planMap.get('enterprise')!;
-      const businessPlanId = planMap.get('business')!;
-
-      await client.query(
-        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
-         VALUES ($1, $2, 'annual', 'ACTIVE', NOW(), NOW() + INTERVAL '1 year')
-         ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
-        [tenant1Id, enterprisePlanId]
-      );
-
-      await client.query(
-        `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
-         VALUES ($1, $2, 'monthly', 'ACTIVE', NOW(), NOW() + INTERVAL '1 month')
-         ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
-        [tenant2Id, businessPlanId]
-      );
-    } else {
-      console.log('Production mode: skipped demo Super Admin, demo tenants, demo users, and demo subscriptions.');
+    if (teamAdminEmail && teamAdminEmail !== ownerEmail) {
+      const gRes = await client.query(`SELECT id FROM tenants WHERE slug = 'genemax-it-solution' LIMIT 1`);
+      if (gRes.rows[0]?.id) {
+        tenant1Id = gRes.rows[0].id;
+        const enterprisePlanId = planMap.get('enterprise')!;
+        await client.query(
+          `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
+           VALUES ($1, $2, 'annual', 'ACTIVE', NOW(), NOW() + INTERVAL '1 year')
+           ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE';`,
+          [tenant1Id, enterprisePlanId],
+        );
+      }
     }
 
     await client.query('COMMIT');

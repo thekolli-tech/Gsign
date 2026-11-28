@@ -42,42 +42,26 @@ export class AuthService {
   }
 
   private async ensureEnvConfiguredSuperAdmin(normalizedEmail: string): Promise<boolean> {
-    const candidates = [
-      {
-        email: process.env.GSIGN_TEAM_ADMIN_EMAIL?.trim().toLowerCase(),
-        password: process.env.GSIGN_TEAM_ADMIN_PASSWORD,
-        fullName: 'Genemax IT Solution Admin',
-        phone: '+91 99000 00001',
-        reason: 'Auto-provisioned developer & Genemax IT Solution team super admin from environment',
-      },
-      {
-        email: process.env.GSIGN_OWNER_EMAIL?.trim().toLowerCase(),
-        password: process.env.GSIGN_OWNER_INITIAL_PASSWORD,
-        fullName: 'Genemax Platform Owner',
-        phone: '+91 99000 00000',
-        reason: 'Auto-provisioned Platform Owner from environment',
-      },
-    ];
+    const ownerEmail = process.env.GSIGN_OWNER_EMAIL?.trim().toLowerCase();
+    const ownerPassword = process.env.GSIGN_OWNER_INITIAL_PASSWORD;
+    if (!ownerEmail || !ownerPassword || ownerEmail !== normalizedEmail) {
+      return false;
+    }
 
-    const match = candidates.find(
-      (c) => c.email && c.password && c.email === normalizedEmail,
-    );
-    if (!match || !match.password) return false;
-
-    const passwordHash = await this.crypto.hashPassword(match.password);
+    const passwordHash = await this.crypto.hashPassword(ownerPassword);
     await this.db.executeAsSuperAdmin(async (client) => {
       const res = await client.query(
         `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
-         VALUES ($1, $2, $3, $4, true, true, false, true, NOW())
+         VALUES ($1, $2, 'Genemax Platform Owner', '+91 99000 00000', true, true, false, true, NOW())
          ON CONFLICT (email) DO NOTHING
          RETURNING id`,
-        [normalizedEmail, passwordHash, match.fullName, match.phone],
+        [normalizedEmail, passwordHash],
       );
       if (res.rows[0]?.id) {
         await client.query(
           `INSERT INTO audit_logs (actor_id, actor_email, actor_role, action, target_type, target_id, reason, metadata)
-           VALUES ($1, $2, 'PLATFORM_OWNER', 'ADMIN_BOOTSTRAP', 'USER', $3, $4, '{"provider":"env_bootstrap"}')`,
-          [res.rows[0].id, normalizedEmail, res.rows[0].id, match.reason],
+           VALUES ($1, $2, 'PLATFORM_OWNER', 'ADMIN_BOOTSTRAP', 'USER', $3, 'Auto-provisioned Platform Owner from environment', '{"provider":"env_bootstrap"}')`,
+          [res.rows[0].id, normalizedEmail, res.rows[0].id],
         );
       }
     });
@@ -85,31 +69,62 @@ export class AuthService {
   }
 
   private async ensureEnvConfiguredCompanyAdmin(normalizedEmail: string): Promise<boolean> {
-    const companyEmail = process.env.GSIGN_COMPANY_ADMIN_EMAIL?.trim().toLowerCase();
-    const companyPassword = process.env.GSIGN_COMPANY_ADMIN_PASSWORD;
-    if (!companyEmail || !companyPassword || companyEmail !== normalizedEmail) {
+    const candidates = [
+      {
+        email: process.env.GSIGN_TEAM_ADMIN_EMAIL?.trim().toLowerCase(),
+        password: process.env.GSIGN_TEAM_ADMIN_PASSWORD,
+        fullName: 'Genemax IT Solution Team',
+        phone: '+91 99000 00001',
+      },
+      {
+        email: process.env.GSIGN_COMPANY_ADMIN_EMAIL?.trim().toLowerCase(),
+        password: process.env.GSIGN_COMPANY_ADMIN_PASSWORD,
+        fullName: 'Genemax IT Solution Workspace Admin',
+        phone: '+91 99000 00002',
+      },
+    ];
+
+    const match = candidates.find(
+      (c) => c.email && c.password && c.email === normalizedEmail,
+    );
+    if (!match || !match.password) {
       return false;
     }
 
-    const passwordHash = await this.crypto.hashPassword(companyPassword);
+    const passwordHash = await this.crypto.hashPassword(match.password);
     await this.db.executeAsSuperAdmin(async (client) => {
       const tenantRes = await client.query(
         `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
-         VALUES ('Genemax IT Solution Private Limited', 'genemax-it-solution', $1, '+91 99000 00002', 'Active')
+         VALUES ('Genemax IT Solution Private Limited', 'genemax-it-solution', $1, $2, 'Active')
          ON CONFLICT (slug) DO UPDATE SET status = 'Active'
          RETURNING id`,
-        [normalizedEmail],
+        [normalizedEmail, match.phone],
       );
       const tenantId = tenantRes.rows[0].id;
 
-      const userRes = await client.query(
-        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
-         VALUES ($1, $2, 'Genemax IT Solution Workspace Admin', '+91 99000 00002', false, false, false, true, NOW())
-         ON CONFLICT (email) DO NOTHING
-         RETURNING id`,
-        [normalizedEmail, passwordHash],
+      let userId: string | null = null;
+      const existingRes = await client.query(
+        `SELECT id, is_super_admin FROM users WHERE email = $1`,
+        [normalizedEmail],
       );
-      const userId = userRes.rows[0]?.id;
+      if (existingRes.rows[0]?.id) {
+        userId = existingRes.rows[0].id;
+        if (existingRes.rows[0].is_super_admin) {
+          await client.query(
+            `UPDATE users SET is_super_admin = false, is_platform_owner = false WHERE id = $1`,
+            [userId],
+          );
+        }
+      } else {
+        const userRes = await client.query(
+          `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
+           VALUES ($1, $2, $3, $4, false, false, false, true, NOW())
+           RETURNING id`,
+          [normalizedEmail, passwordHash, match.fullName, match.phone],
+        );
+        userId = userRes.rows[0]?.id || null;
+      }
+
       if (!userId) return;
 
       const roleRes = await client.query(
@@ -117,10 +132,10 @@ export class AuthService {
       );
       if (roleRes.rows[0]?.id) {
         await client.query(
-          `INSERT INTO user_tenant_roles (user_id, tenant_id, role_id)
-           VALUES ($1, $2, $3)
-           ON CONFLICT DO NOTHING`,
-          [userId, tenantId, roleRes.rows[0].id],
+          `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, department, status)
+           VALUES ($1, $2, $3, 'Executive', 'Active')
+           ON CONFLICT (tenant_id, user_id) DO NOTHING`,
+          [tenantId, userId, roleRes.rows[0].id],
         );
       }
 
@@ -131,9 +146,9 @@ export class AuthService {
       );
       if (planRes.rows[0]?.id) {
         await client.query(
-          `INSERT INTO subscriptions (tenant_id, plan_id, status, billing_cycle, current_period_start, current_period_end)
-           VALUES ($1, $2, 'Active', 'annual', NOW(), NOW() + INTERVAL '365 days')
-           ON CONFLICT DO NOTHING`,
+          `INSERT INTO tenant_subscriptions (tenant_id, plan_id, billing_cycle, status, current_period_start, current_period_end)
+           VALUES ($1, $2, 'annual', 'ACTIVE', NOW(), NOW() + INTERVAL '365 days')
+           ON CONFLICT (tenant_id) DO UPDATE SET status = 'ACTIVE'`,
           [tenantId, planRes.rows[0].id],
         );
       }
@@ -172,8 +187,12 @@ export class AuthService {
     );
 
     if (
-      userRes.rows.length === 0 &&
-      ((await this.ensureEnvConfiguredSuperAdmin(normalizedEmail)) ||
+      (userRes.rows.length === 0 &&
+        ((await this.ensureEnvConfiguredSuperAdmin(normalizedEmail)) ||
+          (await this.ensureEnvConfiguredCompanyAdmin(normalizedEmail)))) ||
+      (userRes.rows[0]?.is_super_admin &&
+        (normalizedEmail === process.env.GSIGN_TEAM_ADMIN_EMAIL?.trim().toLowerCase() ||
+          normalizedEmail === process.env.GSIGN_COMPANY_ADMIN_EMAIL?.trim().toLowerCase()) &&
         (await this.ensureEnvConfiguredCompanyAdmin(normalizedEmail)))
     ) {
       userRes = await this.db.query(
