@@ -84,6 +84,63 @@ export class AuthService {
     return true;
   }
 
+  private async ensureEnvConfiguredCompanyAdmin(normalizedEmail: string): Promise<boolean> {
+    const companyEmail = process.env.GSIGN_COMPANY_ADMIN_EMAIL?.trim().toLowerCase();
+    const companyPassword = process.env.GSIGN_COMPANY_ADMIN_PASSWORD;
+    if (!companyEmail || !companyPassword || companyEmail !== normalizedEmail) {
+      return false;
+    }
+
+    const passwordHash = await this.crypto.hashPassword(companyPassword);
+    await this.db.executeAsSuperAdmin(async (client) => {
+      const tenantRes = await client.query(
+        `INSERT INTO tenants (name, slug, contact_email, contact_phone, status)
+         VALUES ('Genemax IT Solution Private Limited', 'genemax-it-solution', $1, '+91 99000 00002', 'Active')
+         ON CONFLICT (slug) DO UPDATE SET status = 'Active'
+         RETURNING id`,
+        [normalizedEmail],
+      );
+      const tenantId = tenantRes.rows[0].id;
+
+      const userRes = await client.query(
+        `INSERT INTO users (email, password_hash, full_name, phone_number, is_super_admin, is_platform_owner, must_change_password, is_active, email_verified_at)
+         VALUES ($1, $2, 'Genemax IT Solution Workspace Admin', '+91 99000 00002', false, false, false, true, NOW())
+         ON CONFLICT (email) DO NOTHING
+         RETURNING id`,
+        [normalizedEmail, passwordHash],
+      );
+      const userId = userRes.rows[0]?.id;
+      if (!userId) return;
+
+      const roleRes = await client.query(
+        `SELECT id FROM roles WHERE name = 'Company Admin' AND is_system_role = true LIMIT 1`,
+      );
+      if (roleRes.rows[0]?.id) {
+        await client.query(
+          `INSERT INTO user_tenant_roles (user_id, tenant_id, role_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT DO NOTHING`,
+          [userId, tenantId, roleRes.rows[0].id],
+        );
+      }
+
+      const planRes = await client.query(
+        `SELECT id FROM subscription_plans WHERE slug IN ('enterprise', 'professional', 'business', 'starter') AND is_active = true
+         ORDER BY CASE slug WHEN 'enterprise' THEN 1 WHEN 'professional' THEN 2 WHEN 'business' THEN 3 ELSE 4 END
+         LIMIT 1`,
+      );
+      if (planRes.rows[0]?.id) {
+        await client.query(
+          `INSERT INTO subscriptions (tenant_id, plan_id, status, billing_cycle, current_period_start, current_period_end)
+           VALUES ($1, $2, 'Active', 'annual', NOW(), NOW() + INTERVAL '365 days')
+           ON CONFLICT DO NOTHING`,
+          [tenantId, planRes.rows[0].id],
+        );
+      }
+    });
+    return true;
+  }
+
   /**
    * Primary User Login
    */
@@ -114,7 +171,11 @@ export class AuthService {
       [normalizedEmail]
     );
 
-    if (userRes.rows.length === 0 && (await this.ensureEnvConfiguredSuperAdmin(normalizedEmail))) {
+    if (
+      userRes.rows.length === 0 &&
+      ((await this.ensureEnvConfiguredSuperAdmin(normalizedEmail)) ||
+        (await this.ensureEnvConfiguredCompanyAdmin(normalizedEmail)))
+    ) {
       userRes = await this.db.query(
         `SELECT id, email, password_hash, full_name, is_super_admin, is_active 
          FROM users WHERE email = $1`,
