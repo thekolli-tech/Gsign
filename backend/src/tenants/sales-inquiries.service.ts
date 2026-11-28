@@ -168,32 +168,44 @@ export class SalesInquiriesService {
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    return this.db.executeAsSuperAdmin(async (client) => {
-      const countRes = await client.query(
-        `SELECT COUNT(*)::int AS total FROM sales_inquiries ${whereClause}`,
-        values,
-      );
-      const total = Number(countRes.rows[0]?.total ?? 0);
+    try {
+      return await this.db.executeAsSuperAdmin(async (client) => {
+        const countRes = await client.query(
+          `SELECT COUNT(*)::int AS total FROM sales_inquiries ${whereClause}`,
+          values,
+        );
+        const total = Number(countRes.rows[0]?.total ?? 0);
 
-      const listRes = await client.query(
-        `SELECT id, contact_name, company_name, business_email, phone_number,
-                company_size, requested_plan, monthly_agreements, message,
-                status, assigned_to, assigned_to_email, internal_notes,
-                created_at, updated_at
-         FROM sales_inquiries
-         ${whereClause}
-         ORDER BY created_at DESC
-         LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
-        [...values, safeLimit, offset],
-      );
+        const listRes = await client.query(
+          `SELECT id, contact_name, company_name, business_email, phone_number,
+                  company_size, requested_plan, monthly_agreements, message,
+                  status, assigned_to, assigned_to_email, internal_notes,
+                  created_at, updated_at
+           FROM sales_inquiries
+           ${whereClause}
+           ORDER BY created_at DESC
+           LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+          [...values, safeLimit, offset],
+        );
 
-      return {
-        items: listRes.rows,
-        total,
-        page: safePage,
-        limit: safeLimit,
-      };
-    });
+        return {
+          items: listRes.rows,
+          total,
+          page: safePage,
+          limit: safeLimit,
+        };
+      });
+    } catch (err: any) {
+      if (err?.code === '42P01') {
+        return {
+          items: [],
+          total: 0,
+          page: safePage,
+          limit: safeLimit,
+        };
+      }
+      throw err;
+    }
   }
 
   async getInquiry(id: string) {

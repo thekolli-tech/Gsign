@@ -698,20 +698,27 @@ export class TenantsController {
   @Get('platform/support-access')
   @ApiOperation({ summary: 'List audit-logged support access sessions (Super Admin only)' })
   async getSupportAccessSessions() {
-    const res = await this.db.executeAsSuperAdmin(async (client) => {
-      await client.query(
-        `UPDATE support_access_sessions SET status = 'Expired' WHERE status = 'Active' AND expires_at <= NOW()`,
-      );
-      return client.query(
-        `SELECT s.id, s.tenant_id, t.name AS tenant_name, s.granted_by_email,
-                s.reason, s.status, s.expires_at, s.revoked_at, s.created_at
-         FROM support_access_sessions s
-         JOIN tenants t ON t.id = s.tenant_id
-         ORDER BY s.created_at DESC
-         LIMIT 50`,
-      );
-    });
-    return res.rows;
+    try {
+      const res = await this.db.executeAsSuperAdmin(async (client) => {
+        await client.query(
+          `UPDATE support_access_sessions SET status = 'Expired' WHERE status = 'Active' AND expires_at <= NOW()`,
+        );
+        return client.query(
+          `SELECT s.id, s.tenant_id, t.name AS tenant_name, s.granted_by_email,
+                  s.reason, s.status, s.expires_at, s.revoked_at, s.created_at
+           FROM support_access_sessions s
+           JOIN tenants t ON t.id = s.tenant_id
+           ORDER BY s.created_at DESC
+           LIMIT 50`,
+        );
+      });
+      return res.rows;
+    } catch (err: any) {
+      if (err?.code === '42P01') {
+        return [];
+      }
+      throw err;
+    }
   }
 
   @UseGuards(SuperAdminGuard)
@@ -779,14 +786,26 @@ export class TenantsController {
   @ApiOperation({ summary: 'List per-tenant feature flags (Super Admin only)' })
   async getPlatformFeatureFlags() {
     const res = await this.db.executeAsSuperAdmin(async (client) => {
-      return client.query(
-        `SELECT t.id, t.name, t.slug, t.status, t.feature_flags_json, sp.name AS plan_name
-         FROM tenants t
-         LEFT JOIN tenant_subscriptions ts ON ts.tenant_id = t.id
-         LEFT JOIN subscription_plans sp ON sp.id = ts.plan_id
-         WHERE (to_jsonb(t)->>'deleted_at') IS NULL AND t.status <> 'Archived'
-         ORDER BY t.created_at DESC`,
-      );
+      try {
+        return await client.query(
+          `SELECT t.id, t.name, t.slug, t.status, t.feature_flags_json, sp.name AS plan_name
+           FROM tenants t
+           LEFT JOIN tenant_subscriptions ts ON ts.tenant_id = t.id
+           LEFT JOIN subscription_plans sp ON sp.id = ts.plan_id
+           WHERE (to_jsonb(t)->>'deleted_at') IS NULL AND t.status <> 'Archived'
+           ORDER BY t.created_at DESC`,
+        );
+      } catch (err: any) {
+        if (err?.code !== '42703') throw err;
+        return client.query(
+          `SELECT t.id, t.name, t.slug, t.status, NULL::jsonb AS feature_flags_json, sp.name AS plan_name
+           FROM tenants t
+           LEFT JOIN tenant_subscriptions ts ON ts.tenant_id = t.id
+           LEFT JOIN subscription_plans sp ON sp.id = ts.plan_id
+           WHERE (to_jsonb(t)->>'deleted_at') IS NULL AND t.status <> 'Archived'
+           ORDER BY t.created_at DESC`,
+        );
+      }
     });
     const defaults = {
       custom_branding: true,
